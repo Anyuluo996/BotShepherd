@@ -7,7 +7,7 @@ on:
   workflow_dispatch:  # 允许手动触发
 
 env:
-  DOCKER_IMAGE_NAME: botshepherd
+  DOCKER_IMAGE_NAME: botshepherdv2
 
 jobs:
   build-and-push:
@@ -60,10 +60,8 @@ jobs:
           platforms: linux/amd64,linux/arm64  # 多平台支持
           push: true
           tags: |
-            # Docker Hub 标签
             ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.DOCKER_IMAGE_NAME }}:latest
             ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.DOCKER_IMAGE_NAME }}:${{ steps.version_info.outputs.version }}
-            # CNB 仓库标签
             docker.cnb.cool/anyuluo/dockerimages/${{ env.DOCKER_IMAGE_NAME }}:latest
             docker.cnb.cool/anyuluo/dockerimages/${{ env.DOCKER_IMAGE_NAME }}:${{ steps.version_info.outputs.version }}
           cache-from: type=gha
