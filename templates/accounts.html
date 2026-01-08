@@ -79,6 +79,7 @@
                         <th>名称</th>
                         <th>描述</th>
                         <th>状态</th>
+                        <th>鉴权状态</th>
                         <th>最后接收</th>
                         <th>最后发送</th>
                         <th>操作</th>
@@ -242,24 +243,41 @@ function updateAccountStats() {
 function updateAccountTable() {
     const tbody = document.querySelector('#accounts-table tbody');
     tbody.innerHTML = '';
-    
+
     Object.entries(accounts).forEach(([accountId, account]) => {
         const row = document.createElement('tr');
-        
-        const statusBadge = account.enabled ? 
-            '<span class="badge bg-success">启用</span>' : 
+
+        const statusBadge = account.enabled ?
+            '<span class="badge bg-success">启用</span>' :
             '<span class="badge bg-secondary">禁用</span>';
-        
-        const lastReceive = account.last_receive_time ? 
+
+        // 鉴权状态显示
+        const authStatus = account.auth_status || {};
+        let authBadge = '<span class="badge bg-secondary">未知</span>';
+
+        if (authStatus.is_banned) {
+            const bannedUntil = authStatus.banned_until ?
+                ` (${formatDateTime(authStatus.banned_until)})` : '';
+            authBadge = `<span class="badge bg-danger">已封禁${bannedUntil}</span>`;
+        } else if (authStatus.is_authenticated) {
+            authBadge = '<span class="badge bg-success">已鉴权</span>';
+        } else if (authStatus.failed_attempts > 0) {
+            authBadge = `<span class="badge bg-warning text-dark">未鉴权 (${authStatus.failed_attempts}次失败)</span>`;
+        } else {
+            authBadge = '<span class="badge bg-secondary">未鉴权</span>';
+        }
+
+        const lastReceive = account.last_receive_time ?
             formatDateTime(account.last_receive_time) : '从未';
-        const lastSend = account.last_send_time ? 
+        const lastSend = account.last_send_time ?
             formatDateTime(account.last_send_time) : '从未';
-        
+
         row.innerHTML = `
             <td><code>${accountId}</code></td>
             <td>${account.name}</td>
             <td><small>${account.description || '无描述'}</small></td>
             <td>${statusBadge}</td>
+            <td>${authBadge}</td>
             <td><small>${lastReceive}</small></td>
             <td><small>${lastSend}</small></td>
             <td>
@@ -270,7 +288,7 @@ function updateAccountTable() {
                     <button class="btn btn-sm btn-outline-warning" onclick="editAccount('${accountId}')" title="编辑">
                         <i class="bi bi-pencil"></i>
                     </button>
-                    <button class="btn btn-sm btn-outline-${account.enabled ? 'warning' : 'success'}" 
+                    <button class="btn btn-sm btn-outline-${account.enabled ? 'warning' : 'success'}"
                             onclick="toggleAccount('${accountId}')" title="${account.enabled ? '禁用' : '启用'}">
                         <i class="bi bi-${account.enabled ? 'pause' : 'play'}"></i>
                     </button>
@@ -280,7 +298,7 @@ function updateAccountTable() {
                 </div>
             </td>
         `;
-        
+
         tbody.appendChild(row);
     });
 }
@@ -417,12 +435,29 @@ async function deleteAccount(accountId) {
 // 显示账号详情
 function showAccountDetail(accountId) {
     const account = accounts[accountId];
-    
+
     let formattedAliases = '无';
     if (account.aliases && Object.keys(account.aliases).length > 0) {
         formattedAliases = Object.entries(account.aliases).map(([target, aliasList]) => {
             return `<code>${aliasList.join(', ')}</code> → <code>${target}</code>`;
         }).join('<br>');
+    }
+
+    // 鉴权状态信息
+    const authStatus = account.auth_status || {};
+    let authInfo = '<span class="badge bg-secondary">未知</span>';
+    if (authStatus.is_banned) {
+        const bannedUntil = authStatus.banned_until ?
+            ` (${formatDateTime(authStatus.banned_until)})` : '';
+        authInfo = `<span class="badge bg-danger">已封禁${bannedUntil}</span>`;
+    } else if (authStatus.is_authenticated) {
+        const authTime = authStatus.authenticated_at ?
+            `<br><small class="text-muted">鉴权时间: ${formatDateTime(authStatus.authenticated_at)}</small>` : '';
+        authInfo = `<span class="badge bg-success">已鉴权</span>${authTime}`;
+    } else if (authStatus.failed_attempts > 0) {
+        authInfo = `<span class="badge bg-warning text-dark">未鉴权 (${authStatus.failed_attempts}次失败)</span>`;
+    } else {
+        authInfo = '<span class="badge bg-secondary">未鉴权</span>';
     }
 
     const content = `
@@ -432,14 +467,20 @@ function showAccountDetail(accountId) {
                 <table class="table table-sm">
                     <tr><td>账号ID</td><td><code>${accountId}</code></td></tr>
                     <tr><td>名称</td><td>${account.name}</td></tr>
-                    
+
                     <tr><td>别名</td><td>${formattedAliases}</td></tr>
-                    
+
                     <tr><td>描述</td><td>${account.description || '无'}</td></tr>
                     <tr><td>状态</td><td>${account.enabled ? '启用' : '禁用'}</td></tr>
                 </table>
             </div>
             <div class="col-md-6">
+                <h6>鉴权信息</h6>
+                <table class="table table-sm">
+                    <tr><td>鉴权状态</td><td>${authInfo}</td></tr>
+                    <tr><td>失败次数</td><td>${authStatus.failed_attempts || 0} 次</td></tr>
+                </table>
+
                 <h6>活动信息</h6>
                 <table class="table table-sm">
                     <tr><td>最后接收</td><td>${account.last_receive_time ? formatDateTime(account.last_receive_time) : '从未'}</td></tr>
@@ -448,7 +489,7 @@ function showAccountDetail(accountId) {
             </div>
         </div>
     `;
-    
+
     document.getElementById('accountDetailContent').innerHTML = content;
     new bootstrap.Modal(document.getElementById('accountDetailModal')).show();
 }

@@ -18,41 +18,93 @@ from app.utils.reboot import reboot
 
 class WebServer:
     """Web服务器"""
-    
-    def __init__(self, config_manager, database_manager, proxy_server, logger, port=5100, loop=None):
+
+    def __init__(self, config_manager, database_manager, proxy_server, logger, port=5100, loop=None, backup_manager=None):
         self.config_manager = config_manager
         self.database_manager = database_manager
         self.proxy_server = proxy_server
         self.logger = logger
         self.port = port
         self.loop = loop
-        
+        self.backup_manager = backup_manager
+
         # 创建Flask应用
-        self.app = Flask(__name__, 
+        self.app = Flask(__name__,
                         template_folder="../../templates",
                         static_folder="../../static")
         self.app.secret_key = "botshepherd_secret_key_change_me"
-        
+
         # 启用CORS
         CORS(self.app)
-        
+
+        # 获取 WebUI 路径前缀
+        self.webui_path = self._get_webui_path()
+
         # 注册路由
         self._register_routes()
-        
+
         self.server_thread = None
         self.running = False
+
+    def _render_template(self, template_name, **context):
+        """渲染模板并自动注入 WebUI 路径"""
+        # 构建 WebUI 路径前缀
+        prefix = f"/{self.webui_path}" if self.webui_path else ""
+        prefix_slash = f"{prefix}/" if prefix else "/"
+
+        # 注入到模板上下文
+        context['webui_path'] = self.webui_path
+        context['webui_prefix'] = prefix
+        context['webui_prefix_slash'] = prefix_slash
+
+        return render_template(template_name, **context)
+
+    def _get_webui_path(self):
+        """获取配置的 WebUI 路径前缀"""
+        try:
+            global_config = self.config_manager.get_global_config()
+            web_auth = global_config.get('web_auth', {})
+            path = web_auth.get('webui_path', 'bs').strip()
+            # 如果为空，使用根路径
+            if not path:
+                return ''
+            # 确保不以 / 开头或结尾
+            return path.strip('/')
+        except Exception:
+            return 'bs'
     
     def _register_routes(self):
         """注册路由"""
-        
+
+        # 构建 WebUI 路径前缀
+        # 如果 self.webui_path 为空，表示使用根路径
+        # 否则使用 /<self.webui_path> 作为前缀
+        prefix = f"/{self.webui_path}" if self.webui_path else ""
+        prefix_slash = f"{prefix}/" if prefix else "/"
+
+        # 根路径重定向
         @self.app.route('/')
+        def root_redirect():
+            """根路径重定向"""
+            # 从配置获取重定向目标
+            global_config = self.config_manager.get_global_config()
+            web_auth = global_config.get('web_auth', {})
+            redirect_url = web_auth.get('root_redirect', '').strip()
+
+            # 如果配置了重定向URL，则重定向到该URL
+            if redirect_url:
+                return redirect(redirect_url)
+            # 否则重定向到 /bs/
+            return redirect(prefix_slash)
+
+        @self.app.route(prefix_slash)
         def index():
             """主页"""
             if not self._check_auth():
                 return redirect(url_for('login'))
-            return render_template('index.html')
+            return self._render_template('index.html')
         
-        @self.app.route('/login', methods=['GET', 'POST'])
+        @self.app.route(f'{prefix}/login', methods=['GET', 'POST'])
         def login():
             """登录页面"""
             if request.method == 'POST':
@@ -68,82 +120,91 @@ class WebServer:
                     session['authenticated'] = True
                     return redirect(url_for('index'))
                 else:
-                    return render_template('login.html', error='用户名或密码错误')
+                    return self._render_template('login.html', error='用户名或密码错误')
             
-            return render_template('login.html')
+            return self._render_template('login.html')
         
-        @self.app.route('/logout')
+        @self.app.route(f'{prefix}/logout')
         def logout():
             """登出"""
             session.pop('authenticated', None)
             return redirect(url_for('login'))
 
         # 页面路由
-        @self.app.route('/connections')
+        @self.app.route(f'{prefix}/connections')
         def connections():
             """连接管理页面"""
             if not self._check_auth():
                 return redirect(url_for('login'))
-            return render_template('connections.html')
+            return self._render_template('connections.html')
 
-        @self.app.route('/accounts')
+        @self.app.route(f'{prefix}/accounts')
         def accounts():
             """账号管理页面"""
             if not self._check_auth():
                 return redirect(url_for('login'))
-            return render_template('accounts.html')
+            return self._render_template('accounts.html')
 
-        @self.app.route('/groups')
+        @self.app.route(f'{prefix}/groups')
         def groups():
             """群组管理页面"""
             if not self._check_auth():
                 return redirect(url_for('login'))
-            return render_template('groups.html')
+            return self._render_template('groups.html')
 
-        @self.app.route('/statistics')
+        @self.app.route(f'{prefix}/statistics')
         def statistics():
             """统计分析页面"""
             if not self._check_auth():
                 return redirect(url_for('login'))
-            return render_template('statistics.html')
+            return self._render_template('statistics.html')
 
-        @self.app.route('/query')
+        @self.app.route(f'{prefix}/query')
         def query():
             """消息查询页面"""
             if not self._check_auth():
                 return redirect(url_for('login'))
-            return render_template('query.html')
+            return self._render_template('query.html')
 
-        @self.app.route('/filters')
+        @self.app.route(f'{prefix}/filters')
         def filters():
             """过滤设置页面"""
             if not self._check_auth():
                 return redirect(url_for('login'))
-            return render_template('filters.html')
+            return self._render_template('filters.html')
 
-        @self.app.route('/logs')
+        @self.app.route(f'{prefix}/logs')
         def logs():
             """日志查看页面"""
             if not self._check_auth():
                 return redirect(url_for('login'))
-            return render_template('logs.html')
+            return self._render_template('logs.html')
 
-        @self.app.route('/settings')
+        @self.app.route(f'{prefix}/settings')
         def settings():
             """系统设置页面"""
             if not self._check_auth():
                 return redirect(url_for('login'))
-            return render_template('settings.html')
+            return self._render_template('settings.html')
 
-        @self.app.route('/backups')
+        @self.app.route(f'{prefix}/backups')
         def backups():
             """备份管理页面"""
             if not self._check_auth():
                 return redirect(url_for('login'))
-            return render_template('backups.html')
+            return self._render_template('backups.html')
 
         # API路由
-        @self.app.route('/api/version')
+        @self.app.route('/health')
+        def health_check():
+            """健康检测端点（无需认证）"""
+            return jsonify({
+                'status': 'healthy',
+                'service': 'BotShepherd',
+                'timestamp': datetime.now().isoformat()
+            }), 200
+
+        @self.app.route(f'{prefix}/api/version')
         def api_version():
             """版本信息API"""
             if not self._check_auth():
@@ -164,7 +225,7 @@ class WebServer:
                 })
                 
                 
-        @self.app.route('/api/github-version')
+        @self.app.route(f'{prefix}/api/github-version')
         def api_remote_version():
             """从 GitHub 获取版本信息 API"""
             if not self._check_auth():
@@ -213,7 +274,7 @@ class WebServer:
                     'error': str(e)
                 })
 
-        @self.app.route('/api/update', methods=['POST'])
+        @self.app.route(f'{prefix}/api/update', methods=['POST'])
         def api_update():
             """执行系统更新（git pull）"""
             if not self._check_auth():
@@ -264,7 +325,7 @@ class WebServer:
                     'message': f'更新失败: {str(e)}'
                 }), 500
 
-        @self.app.route('/api/status')
+        @self.app.route(f'{prefix}/api/status')
         def api_status():
             """系统状态API"""
             if not self._check_auth():
@@ -276,7 +337,7 @@ class WebServer:
                 'timestamp': time.time()
             })
 
-        @self.app.route('/api/dashboard-content')
+        @self.app.route(f'{prefix}/api/dashboard-content')
         def api_dashboard_content():
             """获取仪表盘markdown内容"""
             if not self._check_auth():
@@ -295,7 +356,7 @@ class WebServer:
                 self.logger.web.error(f"读取仪表盘内容失败: {e}")
                 return jsonify({'error': f'读取内容失败: {str(e)}'}), 500
 
-        @self.app.route('/api/system-resources')
+        @self.app.route(f'{prefix}/api/system-resources')
         def api_system_resources():
             """获取系统资源信息"""
             if not self._check_auth():
@@ -372,7 +433,7 @@ class WebServer:
                 self.logger.web.error(f"获取系统资源信息失败: {e}")
                 return jsonify({'error': f'获取系统资源信息失败: {str(e)}'}), 500
 
-        @self.app.route('/api/database-status')
+        @self.app.route(f'{prefix}/api/database-status')
         def api_database_status():
             """获取数据库状态信息"""
             if not self._check_auth():
@@ -404,7 +465,7 @@ class WebServer:
                 self.logger.web.error(f"获取数据库状态失败: {e}")
                 return jsonify({'error': f'获取数据库状态失败: {str(e)}'}), 500
 
-        @self.app.route('/api/connections')
+        @self.app.route(f'{prefix}/api/connections')
         def api_connections():
             """连接配置API"""
             if not self._check_auth():
@@ -419,7 +480,7 @@ class WebServer:
                 self.logger.web.error(f"获取连接配置失败: {e}")
                 return jsonify({'error': str(e)}), 500
         
-        @self.app.route('/api/connections/<connection_id>', methods=['PUT'])
+        @self.app.route(f'{prefix}/api/connections/<connection_id>', methods=['PUT'])
         def api_update_connection(connection_id):
             """更新连接配置"""
             if not self._check_auth():
@@ -457,7 +518,7 @@ class WebServer:
                 self.logger.web.error(f"更新连接配置失败: {e}")
                 return jsonify({'error': f'更新连接配置失败: {str(e)}'}), 500
         
-        @self.app.route('/api/global-config')
+        @self.app.route(f'{prefix}/api/global-config')
         def api_global_config():
             """全局配置API"""
             if not self._check_auth():
@@ -469,7 +530,7 @@ class WebServer:
             except Exception as e:
                 return jsonify({'error': str(e)}), 500
         
-        @self.app.route('/api/global-config', methods=['PUT'])
+        @self.app.route(f'{prefix}/api/global-config', methods=['PUT'])
         def api_update_global_config():
             """更新全局配置"""
             if not self._check_auth():
@@ -488,7 +549,41 @@ class WebServer:
                 self.logger.web.error(f"更新全局配置失败: {e}")
                 return jsonify({'error': f'更新全局配置失败: {str(e)}'}), 500
 
-        @self.app.route('/api/system/restart', methods=['POST'])
+        @self.app.route(f'{prefix}/api/auth-keys')
+        def api_auth_keys():
+            """获取当前有效的鉴权密钥"""
+            if not self._check_auth():
+                return jsonify({'error': '未授权'}), 401
+
+            try:
+                # 从活动连接中获取 command_handler
+                auth_manager = None
+                active_connections = self.proxy_server.active_connections
+
+                if not active_connections:
+                    self.logger.web.warning("没有活动连接")
+                    return jsonify([])
+
+                # 获取第一个可用连接的 auth_manager
+                for connection_id, connection in active_connections.items():
+                    if hasattr(connection, 'command_handler') and connection.command_handler:
+                        auth_manager = connection.command_handler.auth_manager
+                        break
+
+                if not auth_manager:
+                    self.logger.web.warning("无法从活动连接获取 auth_manager")
+                    return jsonify([])
+
+                # 获取所有有效密钥
+                keys = auth_manager.get_all_valid_keys()
+                self.logger.web.info(f"获取到 {len(keys)} 个有效密钥")
+
+                return jsonify(keys)
+            except Exception as e:
+                self.logger.web.error(f"获取鉴权密钥失败: {e}")
+                return jsonify({'error': str(e)}), 500
+
+        @self.app.route(f'{prefix}/api/system/restart', methods=['POST'])
         def api_restart_system():
             """重启系统"""
             if not self._check_auth():
@@ -516,7 +611,7 @@ class WebServer:
                 self.logger.web.error(f"重启系统失败: {e}")
                 return jsonify({'error': f'重启系统失败: {str(e)}'}), 500
 
-        @self.app.route('/api/logs')
+        @self.app.route(f'{prefix}/api/logs')
         def api_logs():
             """获取日志文件列表"""
             if not self._check_auth():
@@ -565,7 +660,7 @@ class WebServer:
                 self.logger.web.error(f"获取日志文件列表失败: {e}")
                 return jsonify({'error': f'获取日志文件列表失败: {str(e)}'}), 500
 
-        @self.app.route('/api/logs/<path:filename>')
+        @self.app.route(f'{prefix}/api/logs/<path:filename>')
         def api_log_content(filename):
             """获取日志文件内容"""
             if not self._check_auth():
@@ -623,7 +718,7 @@ class WebServer:
                 return jsonify({'error': f'获取日志文件内容失败: {str(e)}'}), 500
             
             
-        @self.app.route('/api/statistics')
+        @self.app.route(f'{prefix}/api/statistics')
         def api_statistics():
             """统计数据API - 修复版本"""
             if not self._check_auth():
@@ -838,7 +933,7 @@ class WebServer:
                 self.logger.web.error(f"获取统计数据失败: {e}")
                 return jsonify({'error': f'获取统计数据失败: {str(e)}'}), 500
 
-        @self.app.route('/api/query_messages')
+        @self.app.route(f'{prefix}/api/query_messages')
         def api_query_messages():
             """消息查询API"""
             if not self._check_auth():
@@ -926,7 +1021,7 @@ class WebServer:
                 return jsonify({'error': f'查询消息失败: {str(e)}'}), 500
 
 
-        @self.app.route('/api/statistics/database')
+        @self.app.route(f'{prefix}/api/statistics/database')
         def api_database_statistics():
             """数据库统计API"""
             if not self._check_auth():
@@ -984,7 +1079,7 @@ class WebServer:
                 self.logger.web.error(f"获取数据库统计失败: {e}")
                 return jsonify({'error': f'获取数据库统计失败: {str(e)}'}), 500
 
-        @self.app.route('/api/recently-active-accounts')
+        @self.app.route(f'{prefix}/api/recently-active-accounts')
         def api_recently_active_accounts():
             """获取今日活跃账号API"""
             if not self._check_auth():
@@ -996,7 +1091,7 @@ class WebServer:
             except Exception as e:
                 return jsonify({'error': str(e)}), 500
 
-        @self.app.route('/api/recently-active-groups')
+        @self.app.route(f'{prefix}/api/recently-active-groups')
         def api_recently_active_groups():
             """获取今日活跃群组API"""
             if not self._check_auth():
@@ -1008,7 +1103,7 @@ class WebServer:
             except Exception as e:
                 return jsonify({'error': str(e)}), 500
 
-        @self.app.route('/api/accounts')
+        @self.app.route(f'{prefix}/api/accounts')
         def api_accounts():
             """账号管理API"""
             if not self._check_auth():
@@ -1019,11 +1114,56 @@ class WebServer:
                 asyncio.run(self.config_manager.flush_dirty_configs())
                 asyncio.run(self.config_manager._load_account_configs())
                 accounts = self.config_manager.get_all_account_configs()
-                return jsonify(accounts)
+
+                # 获取鉴权管理器
+                auth_manager = None
+                active_connections = self.proxy_server.active_connections
+
+                if active_connections:
+                    for connection_id, connection in active_connections.items():
+                        if hasattr(connection, 'command_handler') and connection.command_handler:
+                            auth_manager = connection.command_handler.auth_manager
+                            self.logger.web.debug(f"找到auth_manager: {auth_manager}")
+                            break
+
+                if not auth_manager:
+                    self.logger.web.warning("未找到auth_manager，鉴权状态将不可用")
+
+                # 为每个账号添加鉴权状态
+                accounts_with_auth = {}
+                for account_id, account_data in accounts.items():
+                    accounts_with_auth[account_id] = account_data
+
+                    # 如果有auth_manager，获取鉴权状态
+                    if auth_manager:
+                        try:
+                            try:
+                                loop = asyncio.get_event_loop()
+                            except RuntimeError:
+                                loop = asyncio.new_event_loop()
+                                asyncio.set_event_loop(loop)
+
+                            auth_status = loop.run_until_complete(
+                                auth_manager.get_auth_status(account_id)
+                            )
+                            accounts_with_auth[account_id]['auth_status'] = auth_status
+                            self.logger.web.debug(f"账号 {account_id} 鉴权状态: {auth_status}")
+                        except Exception as e:
+                            self.logger.web.error(f"获取账号 {account_id} 鉴权状态失败: {e}")
+                            import traceback
+                            self.logger.web.error(traceback.format_exc())
+                            accounts_with_auth[account_id]['auth_status'] = None
+                    else:
+                        accounts_with_auth[account_id]['auth_status'] = None
+
+                return jsonify(accounts_with_auth)
             except Exception as e:
+                self.logger.web.error(f"获取账号列表失败: {e}")
+                import traceback
+                self.logger.web.error(traceback.format_exc())
                 return jsonify({'error': str(e)}), 500
 
-        @self.app.route('/api/accounts/<account_id>', methods=['PUT'])
+        @self.app.route(f'{prefix}/api/accounts/<account_id>', methods=['PUT'])
         def api_update_account(account_id):
             """更新账号配置"""
             if not self._check_auth():
@@ -1053,7 +1193,7 @@ class WebServer:
                 self.logger.web.error(f"更新账号配置失败: {e}")
                 return jsonify({'error': f'更新账号配置失败: {str(e)}'}), 500
             
-        @self.app.route('/api/accounts/<account_id>', methods=['DELETE'])
+        @self.app.route(f'{prefix}/api/accounts/<account_id>', methods=['DELETE'])
         def api_delete_account(account_id):
             """删除账号配置"""
             if not self._check_auth():
@@ -1073,7 +1213,7 @@ class WebServer:
             except Exception as e:
                 return jsonify({'error': str(e)}), 500
 
-        @self.app.route('/api/groups')
+        @self.app.route(f'{prefix}/api/groups')
         def api_groups():
             """群组管理API"""
             if not self._check_auth():
@@ -1088,7 +1228,7 @@ class WebServer:
             except Exception as e:
                 return jsonify({'error': str(e)}), 500
 
-        @self.app.route('/api/config/flush', methods=['POST'])
+        @self.app.route(f'{prefix}/api/config/flush', methods=['POST'])
         def api_flush_config():
             """立即将内存中的脏配置写入磁盘"""
             if not self._check_auth():
@@ -1100,7 +1240,7 @@ class WebServer:
             except Exception as e:
                 return jsonify({'error': str(e)}), 500
 
-        @self.app.route('/api/groups/<group_id>', methods=['PUT'])
+        @self.app.route(f'{prefix}/api/groups/<group_id>', methods=['PUT'])
         def api_update_group(group_id):
             """更新群组配置"""
             if not self._check_auth():
@@ -1129,7 +1269,7 @@ class WebServer:
                 self.logger.web.error(f"更新群组配置失败: {e}")
                 return jsonify({'error': f'更新群组配置失败: {str(e)}'}), 500
 
-        @self.app.route('/api/connections/<connection_id>/copy', methods=['POST'])
+        @self.app.route(f'{prefix}/api/connections/<connection_id>/copy', methods=['POST'])
         def api_copy_connection(connection_id):
             """复制连接配置"""
             if not self._check_auth():
@@ -1165,7 +1305,7 @@ class WebServer:
                 self.logger.web.error(f"复制连接配置失败: {e}")
                 return jsonify({'error': f'复制连接配置失败: {str(e)}'}), 500
 
-        @self.app.route('/api/connections/<connection_id>', methods=['DELETE'])
+        @self.app.route(f'{prefix}/api/connections/<connection_id>', methods=['DELETE'])
         def api_delete_connection(connection_id):
             """删除连接配置"""
             if not self._check_auth():
@@ -1195,7 +1335,7 @@ class WebServer:
             except Exception as e:
                 return jsonify({'error': str(e)}), 500
 
-        @self.app.route('/api/groups/<group_id>', methods=['DELETE'])
+        @self.app.route(f'{prefix}/api/groups/<group_id>', methods=['DELETE'])
         def api_delete_group(group_id):
             """删除群组配置"""
             if not self._check_auth():
@@ -1215,7 +1355,7 @@ class WebServer:
             except Exception as e:
                 return jsonify({'error': str(e)}), 500
 
-        @self.app.route('/api/blacklist')
+        @self.app.route(f'{prefix}/api/blacklist')
         def api_blacklist():
             """黑名单API"""
             if not self._check_auth():
@@ -1230,7 +1370,7 @@ class WebServer:
             except Exception as e:
                 return jsonify({'error': str(e)}), 500
 
-        @self.app.route('/api/blacklist', methods=['POST'])
+        @self.app.route(f'{prefix}/api/blacklist', methods=['POST'])
         def api_add_blacklist():
             """添加黑名单"""
             if not self._check_auth():
@@ -1253,7 +1393,7 @@ class WebServer:
                 self.logger.web.error(f"添加黑名单失败: {e}")
                 return jsonify({'error': f'添加黑名单失败: {str(e)}'}), 500
 
-        @self.app.route('/api/blacklist', methods=['DELETE'])
+        @self.app.route(f'{prefix}/api/blacklist', methods=['DELETE'])
         def api_remove_blacklist():
             """移除黑名单"""
             if not self._check_auth():
@@ -1276,14 +1416,14 @@ class WebServer:
                 self.logger.web.error(f"移除黑名单失败: {e}")
                 return jsonify({'error': f'移除黑名单失败: {str(e)}'}), 500
 
-        @self.app.route('/api/backups')
+        @self.app.route(f'{prefix}/api/backups')
         def api_list_backups():
             """列出所有备份文件"""
             if not self._check_auth():
                 return jsonify({'error': '未授权'}), 401
 
             try:
-                backup_manager = self.proxy_server.backup_manager
+                backup_manager = self.backup_manager
                 if not backup_manager:
                     return jsonify({'error': '备份管理器未初始化'}), 500
 
@@ -1293,14 +1433,14 @@ class WebServer:
                 self.logger.web.error(f"列出备份失败: {e}")
                 return jsonify({'error': f'列出备份失败: {str(e)}'}), 500
 
-        @self.app.route('/api/backups/<filename>')
+        @self.app.route(f'{prefix}/api/backups/<filename>')
         def api_download_backup(filename):
             """下载备份文件"""
             if not self._check_auth():
                 return jsonify({'error': '未授权'}), 401
 
             try:
-                backup_manager = self.proxy_server.backup_manager
+                backup_manager = self.backup_manager
                 if not backup_manager:
                     return jsonify({'error': '备份管理器未初始化'}), 500
 
@@ -1316,14 +1456,14 @@ class WebServer:
                 self.logger.web.error(f"下载备份失败: {e}")
                 return jsonify({'error': f'下载备份失败: {str(e)}'}), 500
 
-        @self.app.route('/api/backups', methods=['POST'])
+        @self.app.route(f'{prefix}/api/backups', methods=['POST'])
         def api_create_backup():
             """创建新备份"""
             if not self._check_auth():
                 return jsonify({'error': '未授权'}), 401
 
             try:
-                backup_manager = self.proxy_server.backup_manager
+                backup_manager = self.backup_manager
                 if not backup_manager:
                     return jsonify({'error': '备份管理器未初始化'}), 500
 
@@ -1351,14 +1491,14 @@ class WebServer:
                 self.logger.web.error(f"创建备份失败: {e}")
                 return jsonify({'error': f'创建备份失败: {str(e)}'}), 500
 
-        @self.app.route('/api/backups/<filename>', methods=['DELETE'])
+        @self.app.route(f'{prefix}/api/backups/<filename>', methods=['DELETE'])
         def api_delete_backup(filename):
             """删除备份文件"""
             if not self._check_auth():
                 return jsonify({'error': '未授权'}), 401
 
             try:
-                backup_manager = self.proxy_server.backup_manager
+                backup_manager = self.backup_manager
                 if not backup_manager:
                     return jsonify({'error': '备份管理器未初始化'}), 500
 
@@ -1392,7 +1532,12 @@ class WebServer:
         self.server_thread = threading.Thread(target=run_server, daemon=True)
         self.server_thread.start()
         
-        self.logger.web.info(f"WebUI已启动在 http://localhost:{self.port}")
+        webui_url = f"http://localhost:{self.port}"
+        if self.webui_path:
+            webui_url += f"/{self.webui_path}/"
+        else:
+            webui_url += "/"
+        self.logger.web.info(f"WebUI已启动在 {webui_url}")
         
         # 保持运行状态
         while self.running:

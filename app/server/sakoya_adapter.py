@@ -11,7 +11,7 @@ from typing import Any, Optional
 from ..sakoya.models import MessageReceive, MessageSend, SakowaConverter
 
 
-class SakoyaWebSocketAdapter:
+class GscoreWebSocketAdapter:
     """
     早柚协议 WebSocket 适配器
     包装原始 WebSocket 连接，自动进行协议转换
@@ -48,7 +48,7 @@ class SakoyaWebSocketAdapter:
         self._message_cache = OrderedDict()
         self._max_cache_size = 100
 
-        # self._logger.ws.info(f"[Sakoya] 早柚协议适配器已启动 (bot_id={bot_id})")
+        # self._logger.ws.info(f"[gscore] 早柚协议适配器已启动 (bot_id={bot_id})")
 
     async def _send_bytes(self, data: bytes):
         """发送字节格式的消息"""
@@ -57,23 +57,23 @@ class SakoyaWebSocketAdapter:
             # websockets 库的 send 方法支持 bytes
             if len(data) < 1000:
                 # 仅调试时打印详细日志，避免日志爆炸
-                self._logger.ws.debug(f"[Sakoya] 发送数据: {data.decode('utf-8', errors='replace')}")
+                self._logger.ws.debug(f"[gscore] 发送数据: {data.decode('utf-8', errors='replace')}")
             await self._ws.send(data)
         except websockets.exceptions.ConnectionClosed as e:
             # 连接已关闭，记录日志并重新抛出异常
-            self._logger.ws.warning(f"[Sakoya] 发送字节时连接已关闭: code={e.code}, reason={e.reason}")
+            self._logger.ws.warning(f"[gscore] 发送字节时连接已关闭: code={e.code}, reason={e.reason}")
             raise
         except Exception as e:
-            self._logger.ws.error(f"[Sakoya] 发送字节失败: {e}")
+            self._logger.ws.error(f"[gscore] 发送字节失败: {e}")
             # 如果发送字节失败，尝试发送字符串
             try:
                 await self._ws.send(data.decode('utf-8'))
             except websockets.exceptions.ConnectionClosed as e2:
                 # 连接已关闭，记录日志并重新抛出异常
-                self._logger.ws.warning(f"[Sakoya] 回退到字符串时连接已关闭: code={e2.code}, reason={e2.reason}")
+                self._logger.ws.warning(f"[gscore] 回退到字符串时连接已关闭: code={e2.code}, reason={e2.reason}")
                 raise
             except Exception as e2:
-                self._logger.ws.error(f"[Sakoya] 回退到字符串也失败: {e2}")
+                self._logger.ws.error(f"[gscore] 回退到字符串也失败: {e2}")
                 raise
 
     async def _process_reply_message(self, event: dict):
@@ -108,12 +108,12 @@ class SakoyaWebSocketAdapter:
                 # 没有引用消息，直接返回
                 return
 
-            self._logger.ws.debug(f"[Sakoya] 检测到引用消息，reply_id={reply_id}")
+            self._logger.ws.debug(f"[gscore] 检测到引用消息，reply_id={reply_id}")
 
             # 从缓存中查找被引用的消息
             if reply_id in self._message_cache:
                 reply_message_segments = self._message_cache[reply_id]
-                self._logger.ws.debug(f"[Sakoya] 从缓存中找到被引用消息，包含 {len(reply_message_segments)} 个消息段")
+                self._logger.ws.debug(f"[gscore] 从缓存中找到被引用消息，包含 {len(reply_message_segments)} 个消息段")
 
                 # 收集被引用消息中的图片
                 image_segments = []
@@ -132,11 +132,11 @@ class SakoyaWebSocketAdapter:
                                 }
                             }
                             image_segments.append(new_seg)
-                            self._logger.ws.debug(f"[Sakoya] 从被引用消息中提取图片 URL: {img_url[:100]}")
+                            self._logger.ws.debug(f"[gscore] 从被引用消息中提取图片 URL: {img_url[:100]}")
                         else:
                             # 没有 URL，使用原始消息段
                             image_segments.append(seg)
-                            self._logger.ws.debug(f"[Sakoya] 从被引用消息中提取图片（无 URL）")
+                            self._logger.ws.debug(f"[gscore] 从被引用消息中提取图片（无 URL）")
 
                 # 如果找到了图片，重新组织消息段：移除 reply，将图片放在最前面
                 if image_segments:
@@ -148,14 +148,14 @@ class SakoyaWebSocketAdapter:
 
                     # 将图片插入到最前面
                     event["message"] = image_segments + new_message
-                    self._logger.ws.debug(f"[Sakoya] 已将 {len(image_segments)} 张图片插入到消息最前面，移除了 reply 消息段")
+                    self._logger.ws.debug(f"[gscore] 已将 {len(image_segments)} 张图片插入到消息最前面，移除了 reply 消息段")
             else:
-                self._logger.ws.debug(f"[Sakoya] 缓存中未找到被引用消息 (reply_id={reply_id})，可能消息太旧或缓存已满")
+                self._logger.ws.debug(f"[gscore] 缓存中未找到被引用消息 (reply_id={reply_id})，可能消息太旧或缓存已满")
 
         except Exception as e:
-            self._logger.ws.error(f"[Sakoya] 处理引用消息失败: {e}")
+            self._logger.ws.error(f"[gscore] 处理引用消息失败: {e}")
             import traceback
-            self._logger.ws.error(f"[Sakoya] 错误堆栈: {traceback.format_exc()}")
+            self._logger.ws.error(f"[gscore] 错误堆栈: {traceback.format_exc()}")
 
     @property
     def remote_address(self):
@@ -182,7 +182,7 @@ class SakoyaWebSocketAdapter:
                     message_data = json.loads(message)
                 except json.JSONDecodeError as e:
                     # 非 JSON 消息，直接发送（转为字节）
-                    self._logger.ws.debug(f"[Sakoya] 非 JSON 消息，转为字节发送: {message[:200]}")
+                    self._logger.ws.debug(f"[gscore] 非 JSON 消息，转为字节发送: {message[:200]}")
                     await self._send_bytes(message.encode('utf-8'))
                     return
             else:
@@ -190,7 +190,7 @@ class SakoyaWebSocketAdapter:
 
             # 检查是否是 API 响应（直接透传）
             if "echo" in message_data or "retcode" in message_data or "status" in message_data:
-                self._logger.ws.debug(f"[Sakoya] 检测到 API 响应，直接透传")
+                self._logger.ws.debug(f"[gscore] 检测到 API 响应，直接透传")
                 json_str = json.dumps(message_data, ensure_ascii=False)
                 await self._send_bytes(json_str.encode('utf-8'))
                 return
@@ -200,7 +200,7 @@ class SakoyaWebSocketAdapter:
 
             # 检查是否是需要跳过的元事件
             if post_type == "meta_event":
-                self._logger.ws.debug(f"[Sakoya] 检测到元事件，跳过")
+                self._logger.ws.debug(f"[gscore] 检测到元事件，跳过")
                 return
 
             # 检查是否是消息事件
@@ -216,7 +216,7 @@ class SakoyaWebSocketAdapter:
                     await self._send_bytes(sakoya_bytes)
                     return
                 else:
-                    self._logger.ws.warning(f"[Sakoya] 消息事件转换失败")
+                    self._logger.ws.warning(f"[gscore] 消息事件转换失败")
                     # 转换失败，直接发送原始消息
                     json_str = json.dumps(message_data, ensure_ascii=False)
                     await self._send_bytes(json_str.encode('utf-8'))
@@ -227,7 +227,7 @@ class SakoyaWebSocketAdapter:
 
             # 检查是否是需要透传的 API 类型（不转换）
             if action in self.PASSTHROUGH_ACTIONS:
-                self._logger.ws.debug(f"[Sakoya] 检测到透传 API 类型: {action}，直接发送 OneBot 格式")
+                self._logger.ws.debug(f"[gscore] 检测到透传 API 类型: {action}，直接发送 OneBot 格式")
                 json_str = json.dumps(message_data, ensure_ascii=False)
                 await self._send_bytes(json_str.encode('utf-8'))
                 return
@@ -237,7 +237,7 @@ class SakoyaWebSocketAdapter:
 
             if not is_send_message:
                 # 非发送消息的 API，直接透传
-                self._logger.ws.debug(f"[Sakoya] 非发送消息 API ({action})，直接透传")
+                self._logger.ws.debug(f"[gscore] 非发送消息 API ({action})，直接透传")
                 json_str = json.dumps(message_data, ensure_ascii=False)
                 await self._send_bytes(json_str.encode('utf-8'))
                 return
@@ -250,14 +250,14 @@ class SakoyaWebSocketAdapter:
                 await self._send_bytes(sakoya_bytes)
             else:
                 # 转换失败或不需要转换，直接发送
-                self._logger.ws.warning(f"[Sakoya] API 转换返回 None，直接发送原始消息")
+                self._logger.ws.warning(f"[gscore] API 转换返回 None，直接发送原始消息")
                 json_str = json.dumps(message_data, ensure_ascii=False)
                 await self._send_bytes(json_str.encode('utf-8'))
 
         except Exception as e:
-            self._logger.ws.error(f"[Sakoya] 发送消息转换失败: {e}")
+            self._logger.ws.error(f"[gscore] 发送消息转换失败: {e}")
             import traceback
-            self._logger.ws.error(f"[Sakoya] 错误堆栈: {traceback.format_exc()}")
+            self._logger.ws.error(f"[gscore] 错误堆栈: {traceback.format_exc()}")
             # 失败时尝试直接发送
             try:
                 if isinstance(message, str):
@@ -265,9 +265,9 @@ class SakoyaWebSocketAdapter:
                 else:
                     json_str = json.dumps(message, ensure_ascii=False)
                     await self._send_bytes(json_str.encode('utf-8'))
-                self._logger.ws.error(f"[Sakoya] <<< send() 异常恢复 - 已尝试直接发送")
+                self._logger.ws.error(f"[gscore] <<< send() 异常恢复 - 已尝试直接发送")
             except Exception as e2:
-                self._logger.ws.error(f"[Sakoya] 直接发送也失败: {e2}")
+                self._logger.ws.error(f"[gscore] 直接发送也失败: {e2}")
 
     async def recv(self):
         """
@@ -290,9 +290,9 @@ class SakoyaWebSocketAdapter:
                 try:
                     onebot_api = SakowaConverter.sakoya_send_to_onebot_api(message)
                 except Exception as conv_error:
-                    self._logger.ws.error(f"[Sakoya] 转换失败: {conv_error}")
+                    self._logger.ws.error(f"[gscore] 转换失败: {conv_error}")
                     import traceback
-                    self._logger.ws.error(f"[Sakoya] 转换错误堆栈: {traceback.format_exc()}")
+                    self._logger.ws.error(f"[gscore] 转换错误堆栈: {traceback.format_exc()}")
                     raise
 
                 # 返回 OneBot v11 API 调用的 JSON 字符串
@@ -322,16 +322,16 @@ class SakoyaWebSocketAdapter:
 
         except websockets.exceptions.ConnectionClosedOK as e:
             # 正常关闭，只记录 debug 级别
-            self._logger.ws.debug(f"[Sakoya] 连接已正常关闭: {e}")
+            self._logger.ws.debug(f"[gscore] 连接已正常关闭: {e}")
             raise
         except websockets.exceptions.ConnectionClosed as e:
             # 异常关闭，记录 warning 级别
-            self._logger.ws.warning(f"[Sakoya] 连接异常关闭: {e}")
+            self._logger.ws.warning(f"[gscore] 连接异常关闭: {e}")
             raise
         except Exception as e:
-            self._logger.ws.error(f"[Sakoya] 接收消息转换失败: {e}")
+            self._logger.ws.error(f"[gscore] 接收消息转换失败: {e}")
             import traceback
-            self._logger.ws.error(f"[Sakoya] 错误堆栈: {traceback.format_exc()}")
+            self._logger.ws.error(f"[gscore] 错误堆栈: {traceback.format_exc()}")
             raise
 
     async def close(self, *args, **kwargs):

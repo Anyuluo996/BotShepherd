@@ -169,6 +169,16 @@
                     <label for="webPassword" class="form-label">密码</label>
                     <input type="password" class="form-control" id="webPassword" value="admin">
                 </div>
+                <div class="mb-3">
+                    <label for="rootRedirect" class="form-label">根路径重定向</label>
+                    <input type="text" class="form-control" id="rootRedirect" placeholder="https://github.com/Loping151/BotShepherd">
+                    <div class="form-text">访问根路径 / 时的重定向目标，留空则重定向到 WebUI 路径</div>
+                </div>
+                <div class="mb-3">
+                    <label for="webuiPath" class="form-label">WebUI 路径</label>
+                    <input type="text" class="form-control" id="webuiPath" placeholder="bs">
+                    <div class="form-text">WebUI 访问路径，例如设置为 bs 则访问 /bs/，留空则为根路径</div>
+                </div>
                 <div class="alert alert-warning">
                     <i class="bi bi-exclamation-triangle"></i>
                     请及时修改默认的用户名和密码以确保安全
@@ -193,6 +203,60 @@
                     <label for="backupKeepDays" class="form-label">备份保留天数</label>
                     <input type="number" class="form-control" id="backupKeepDays" value="7" min="1">
                     <div class="form-text">自动清理超过保留天数的备份文件</div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 安全设置 -->
+<div class="card mb-4">
+    <div class="card-header">
+        <h5 class="mb-0">
+            <i class="bi bi-shield-check"></i>
+            安全设置
+            <span class="badge bg-danger ms-2">敏感</span>
+        </h5>
+    </div>
+    <div class="card-body">
+        <div class="alert alert-danger" role="alert">
+            <i class="bi bi-exclamation-triangle"></i>
+            <strong>警告：</strong>启用密钥鉴权后，所有用户必须先通过「鉴权」指令验证才能使用其他功能。请谨慎使用！
+        </div>
+        <div class="row">
+            <div class="col-md-6">
+                <h6 class="mb-3"><i class="bi bi-key"></i> 密钥鉴权</h6>
+                <div class="mb-3">
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="authEnabled">
+                        <label class="form-check-label" for="authEnabled">
+                            启用密钥鉴权
+                        </label>
+                        <div class="form-text">启用后，用户必须先使用「鉴权」指令验证身份</div>
+                    </div>
+                </div>
+                <div class="mb-3">
+                    <label for="maxAttempts" class="form-label">最大验证失败次数</label>
+                    <input type="number" class="form-control" id="maxAttempts" value="3" min="1" max="10">
+                    <div class="form-text">验证失败达到此次数后将封禁用户（1-10次）</div>
+                </div>
+                <div class="mb-3">
+                    <label for="banDuration" class="form-label">封禁时长（分钟）</label>
+                    <input type="number" class="form-control" id="banDuration" value="30" min="1" max="1440">
+                    <div class="form-text">用户被封禁后的禁用时长（1-1440分钟）</div>
+                </div>
+            </div>
+
+            <div class="col-md-6">
+                <h6 class="mb-3"><i class="bi bi-clock-history"></i> 当前有效密钥</h6>
+                <div id="currentAuthKeys" class="p-3 bg-light rounded" style="min-height: 150px;">
+                    <p class="text-muted mb-0">暂无有效密钥</p>
+                </div>
+                <div class="mt-3">
+                    <button class="btn btn-outline-primary btn-sm" onclick="refreshAuthKeys()">
+                        <i class="bi bi-arrow-clockwise"></i>
+                        刷新密钥列表
+                    </button>
                 </div>
             </div>
         </div>
@@ -226,6 +290,9 @@ let globalConfig = {};
 // 页面加载完成后初始化
 document.addEventListener('DOMContentLoaded', function() {
     loadGlobalConfig();
+    refreshAuthKeys(); // 加载密钥列表
+    // 每10秒刷新一次密钥列表
+    setInterval(refreshAuthKeys, 10000);
 });
 
 // 加载全局配置
@@ -271,11 +338,19 @@ function updateSettingsForm() {
     const webAuth = globalConfig.web_auth || {};
     document.getElementById('webUsername').value = webAuth.username || 'admin';
     document.getElementById('webPassword').value = webAuth.password || 'admin';
+    document.getElementById('rootRedirect').value = webAuth.root_redirect || '';
+    document.getElementById('webuiPath').value = webAuth.webui_path || 'bs';
 
     // 备份设置
     const backup = globalConfig.backup || {};
     document.getElementById('backupEnabled').checked = backup.enabled !== false;  // 默认启用
     document.getElementById('backupKeepDays').value = backup.keep_days || 7;
+
+    // 安全设置
+    const security = globalConfig.security || {};
+    document.getElementById('authEnabled').checked = security.auth_enabled || false;
+    document.getElementById('maxAttempts').value = security.max_attempts || 3;
+    document.getElementById('banDuration').value = security.ban_duration || 30;
 
     // 全局别名设置
     updateGlobalAliases();
@@ -401,11 +476,18 @@ async function saveAllSettings() {
             proxy: document.getElementById('proxy').value.trim(),
             web_auth: {
                 username: document.getElementById('webUsername').value.trim(),
-                password: document.getElementById('webPassword').value.trim()
+                password: document.getElementById('webPassword').value.trim(),
+                root_redirect: document.getElementById('rootRedirect').value.trim(),
+                webui_path: document.getElementById('webuiPath').value.trim() || 'bs'
             },
             backup: {
                 enabled: document.getElementById('backupEnabled').checked,
                 keep_days: parseInt(document.getElementById('backupKeepDays').value) || 7
+            },
+            security: {
+                auth_enabled: document.getElementById('authEnabled').checked,
+                max_attempts: parseInt(document.getElementById('maxAttempts').value) || 3,
+                ban_duration: parseInt(document.getElementById('banDuration').value) || 30
             }
         };
         
@@ -419,6 +501,56 @@ async function saveAllSettings() {
         
     } catch (error) {
         showToast(`保存设置失败: ${error.message}`, 'danger');
+    }
+}
+
+// 刷新鉴权密钥列表
+async function refreshAuthKeys() {
+    try {
+        const response = await apiRequest('/api/auth-keys');
+        const container = document.getElementById('currentAuthKeys');
+
+        if (!response || response.length === 0) {
+            container.innerHTML = '<p class="text-muted mb-0">暂无有效密钥</p>';
+            return;
+        }
+
+        const currentTime = Math.floor(Date.now() / 1000);
+        let html = '<div class="list-group list-group-flush">';
+
+        response.forEach(keyInfo => {
+            const expiresAt = keyInfo.expires_at || 0;
+            const remainingSeconds = expiresAt - currentTime;
+
+            if (remainingSeconds > 0) {
+                const minutes = Math.floor(remainingSeconds / 60);
+                const seconds = remainingSeconds % 60;
+                const timeText = `${minutes}分${seconds}秒`;
+
+                html += `
+                    <div class="list-group-item">
+                        <div class="d-flex justify-content-between align-items-center">
+                            <div>
+                                <h6 class="mb-1">Bot: ${keyInfo.bot_id || '未知'}</h6>
+                                <code class="fs-5">${keyInfo.key}</code>
+                            </div>
+                            <div class="text-end">
+                                <span class="badge bg-primary">${timeText}</span>
+                                <div class="text-muted small">剩余时间</div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+        });
+
+        html += '</div>';
+        container.innerHTML = html || '<p class="text-muted mb-0">暂无有效密钥</p>';
+
+    } catch (error) {
+        console.error('刷新密钥列表失败:', error);
+        document.getElementById('currentAuthKeys').innerHTML =
+            '<p class="text-danger mb-0">加载密钥列表失败</p>';
     }
 }
 </script>

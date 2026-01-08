@@ -246,7 +246,9 @@ class ProxyConnection:
 
         # 自身指令处理
         self.command_handler = CommandHandler(config_manager, database_manager, logger, backup_manager)
-        
+        # 初始化鉴权管理器（加载持久化数据）
+        asyncio.create_task(self.command_handler.auth_manager.initialize())
+
     async def start_proxy(self):
         """启动代理"""
         self.running = True
@@ -317,12 +319,27 @@ class ProxyConnection:
             await self.stop()
 
 
-    async def _connect_to_target(self, endpoint: str, target_index: int):
-         try:
-            
+    async def _connect_to_target(self, endpoint, target_index: int):
+        """
+        连接到目标端点
+
+        Args:
+            endpoint: 目标端点配置，可以是字符串或字典
+            target_index: 目标索引
+        """
+        try:
+
             if target_index > len(self.target_connections) + 1 or target_index == 0:
                 raise Exception(f"[{self.connection_id}] 目标ID {target_index} 超出范围!")
-            
+
+            # 兼容字符串和对象格式
+            if isinstance(endpoint, str):
+                endpoint_url = endpoint
+                custom_headers = {}
+            else:
+                endpoint_url = endpoint.get("url", "")
+                custom_headers = endpoint.get("headers", {})
+
             # 使用客户端请求头连接目标
             extra_headers = {}
             if self.client_headers:
@@ -330,7 +347,10 @@ class ProxyConnection:
                 for header_name in ["authorization", "x-self-id", "x-client-role", "user-agent"]:
                     if header_name in self.client_headers:
                         extra_headers[header_name] = self.client_headers[header_name]
-            
+
+            # 添加自定义请求头（优先级更高）
+            extra_headers.update(custom_headers)
+
             # 尝试使用不同的参数名连接，同时配置连接参数
             target_ws = None
             connection_params = {
@@ -344,11 +364,11 @@ class ProxyConnection:
 
             connection_attempts = [
                 # 尝试 extra_headers 参数
-                lambda: websockets.connect(endpoint, extra_headers=extra_headers, **connection_params),
+                lambda: websockets.connect(endpoint_url, extra_headers=extra_headers, **connection_params),
                 # 尝试 additional_headers 参数
-                lambda: websockets.connect(endpoint, additional_headers=extra_headers, **connection_params),
+                lambda: websockets.connect(endpoint_url, additional_headers=extra_headers, **connection_params),
                 # 不使用额外头部，无法连接Nonebot2
-                lambda: websockets.connect(endpoint, **connection_params)
+                lambda: websockets.connect(endpoint_url, **connection_params)
             ]
 
             for attempt in connection_attempts:
@@ -361,23 +381,23 @@ class ProxyConnection:
                 except Exception as e:
                     # 其他错误，直接抛出
                     raise e
-            
+
             if target_index == len(self.target_connections) + 1: # next one to append
                 self.target_connections.append(target_ws) # 保证index正确，即使是None也添加
             else:
                 self.target_connections[self.target_index2list_index(target_index)] = target_ws
             if target_ws is None:
                 raise Exception(f"[{self.connection_id}] 所有连接方式都失败")
-            
-            self.logger.ws.info(f"[{self.connection_id}] 已连接到目标: {endpoint}")
+
+            self.logger.ws.info(f"[{self.connection_id}] 已连接到目标: {endpoint_url}")
             return target_ws
-            
-         except Exception as e:
+
+        except Exception as e:
             if target_index == len(self.target_connections) + 1:
                 self.target_connections.append(None)
             else:
                 self.target_connections[self.target_index2list_index(target_index)] = None
-            self.logger.ws.error(f"[{self.connection_id}] 连接目标失败 {endpoint}: {e}")
+            self.logger.ws.error(f"[{self.connection_id}] 连接目标失败 {endpoint_url if isinstance(endpoint, str) else endpoint.get('url', endpoint)}: {e}")
             return None
 
 
@@ -394,17 +414,12 @@ class ProxyConnection:
             endpoint_url = endpoint if isinstance(endpoint, str) else endpoint.get("url", "")
             is_sakoya = isinstance(endpoint, dict) and endpoint.get("sakoya_protocol", False)
 
-            # self.logger.ws.info(
-            #     f"[{self.connection_id}] 连接目标 {self.list_index2target_index(idx)}: "
-            #     f"{endpoint_url} (Sakoya: {is_sakoya})"
-            # )
-
-            target_ws = await self._connect_to_target(endpoint_url, self.list_index2target_index(idx))
+            target_ws = await self._connect_to_target(endpoint, self.list_index2target_index(idx))
 
             # 如果连接成功，检查是否需要应用早柚协议适配器
             if target_ws:
                 if is_sakoya:
-                    from .sakoya_adapter import SakoyaWebSocketAdapter, extract_bot_id_from_path
+                    from .sakoya_adapter import gscoreWebSocketAdapter, extract_bot_id_from_path
                     # 从目标 URL 中提取 bot_id
                     bot_id = "Bot"  # 默认 bot_id
                     try:
@@ -418,7 +433,7 @@ class ProxyConnection:
                         self.logger.ws.error(f"[{self.connection_id}] 提取 bot_id 失败: {e}，使用默认值 'Bot'")
                         bot_id = "Bot"
 
-                    target_ws = SakoyaWebSocketAdapter(target_ws, bot_id, self.logger)
+                    target_ws = gscoreWebSocketAdapter(target_ws, bot_id, self.logger)
                     # 更新连接列表中的引用为包装后的适配器
                     self.target_connections[idx] = target_ws
                 else:
@@ -495,14 +510,14 @@ class ProxyConnection:
                     await asyncio.sleep(3)
                     try:
                         self.logger.ws.debug(f"[{self.connection_id}] 尝试重连目标 {target_index}...")
-                        target_ws = await self._connect_to_target(endpoint_url, target_index)
+                        target_ws = await self._connect_to_target(endpoint, target_index)
                         if target_ws is None:
                             self.logger.ws.debug(f"[{self.connection_id}] 重连目标 {target_index} 失败，3秒后重试")
                             continue
 
                         # 检查是否需要应用早柚协议适配器
                         if is_sakoya:
-                            from .sakoya_adapter import SakoyaWebSocketAdapter, extract_bot_id_from_path
+                            from .sakoya_adapter import gscoreWebSocketAdapter, extract_bot_id_from_path
                             bot_id = "Bot"  # 默认 bot_id
                             try:
                                 from urllib.parse import urlparse
@@ -512,7 +527,7 @@ class ProxyConnection:
                                     bot_id = "Bot"
                             except Exception:
                                 bot_id = "Bot"
-                            target_ws = SakoyaWebSocketAdapter(target_ws, bot_id, self.logger)
+                            target_ws = gscoreWebSocketAdapter(target_ws, bot_id, self.logger)
 
                         # 更新目标连接列表
                         list_index = self.target_index2list_index(target_index)
@@ -540,11 +555,11 @@ class ProxyConnection:
 
                     await asyncio.sleep(600) # 10分钟后再试
                     try:
-                        target_ws = await self._connect_to_target(endpoint_url, target_index)
+                        target_ws = await self._connect_to_target(endpoint, target_index)
                         if target_ws:
                             # 检查是否需要应用早柚协议适配器
                             if is_sakoya:
-                                from .sakoya_adapter import SakoyaWebSocketAdapter, extract_bot_id_from_path
+                                from .sakoya_adapter import gscoreWebSocketAdapter, extract_bot_id_from_path
                                 bot_id = "Bot"  # 默认 bot_id
                                 try:
                                     from urllib.parse import urlparse
@@ -554,7 +569,7 @@ class ProxyConnection:
                                         bot_id = "Bot"
                                 except Exception:
                                     bot_id = "Bot"
-                                target_ws = SakoyaWebSocketAdapter(target_ws, bot_id, self.logger)
+                                target_ws = gscoreWebSocketAdapter(target_ws, bot_id, self.logger)
 
                             # 更新目标连接列表
                             list_index = self.target_index2list_index(target_index)
@@ -641,7 +656,7 @@ class ProxyConnection:
                     action = message_data.get("action", "")
                     post_type = message_data.get("post_type", "")
 
-                    # Sakoya 后端只需要 API 调用和消息事件
+                    # gscore 后端只需要 API 调用和消息事件
                     # 跳过：元事件（heartbeat、lifecycle等）
                     skip_sakoya = (
                         action in ['lifecycle', '_connect', 'get_login_info', 'get_status', 'get_version_info'] or
@@ -649,7 +664,7 @@ class ProxyConnection:
                     )
 
                     if skip_sakoya:
-                        self.logger.ws.debug(f"[{self.connection_id}] 消息类型 post_type={post_type}, action={action} 将跳过 Sakoya 端点")
+                        self.logger.ws.debug(f"[{self.connection_id}] 消息类型 post_type={post_type}, action={action} 将跳过 gscore 端点")
 
                     for list_index, target_ws in enumerate(self.target_connections):
                         if target_ws:

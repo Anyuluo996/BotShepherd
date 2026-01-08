@@ -146,8 +146,8 @@ class ReloadCommand(BaseCommand):
             return self.format_success("已重载配置文件")
         except Exception as e:
             return self.format_error(f"重载配置文件失败: {e}")
-    
-            
+
+
 def register_control_commands():
     command_registry.register(RestartCommand())
     command_registry.register(SettingCommand())

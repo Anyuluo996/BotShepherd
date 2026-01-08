@@ -12,6 +12,7 @@ from ..onebotv11.message_segment import MessageSegmentParser, MessageSegmentBuil
 from ..onebotv11.api_handler import ApiHandler
 from .permission_manager import PermissionManager
 from .base_command import BaseCommand, CommandResponse, CommandResult, command_registry
+from .auth_manager import AuthManager
 
 class CommandHandler:
     """指令处理器"""
@@ -22,6 +23,7 @@ class CommandHandler:
         self.permission_manager = PermissionManager(config_manager, logger)
         self.logger = logger
         self.backup_manager = backup_manager
+        self.auth_manager = AuthManager(config_manager, logger, database_manager)
         
         
     async def preprocesser(self, message_data: dict) -> dict:
@@ -173,7 +175,12 @@ class CommandHandler:
                 #     result=CommandResult.PERMISSION_DENIED,
                 #     message=permission_check[1]
                 # )
-            
+
+            # 检查密钥鉴权（如果启用了且不是always_allow指令）
+            auth_check = await self._check_auth_permission(event, command)
+            if auth_check:
+                return auth_check
+
             # 准备执行上下文
             context = {
                 "config_manager": self.config_manager,
@@ -181,6 +188,7 @@ class CommandHandler:
                 "permission_manager": self.permission_manager,
                 "logger": self.logger,
                 "backup_manager": self.backup_manager,
+                "auth_manager": self.auth_manager,
                 "command_info": command_info,
                 "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
             }
@@ -204,14 +212,37 @@ class CommandHandler:
     async def _check_command_permission(self, event: Event, command: BaseCommand) -> Tuple[bool, str]:
         """检查指令权限"""
         user_level = self.permission_manager.get_user_permission_level(event)
-        
+
         if user_level.value < command.required_permission.value:
             required_desc = self.permission_manager.get_permission_description(command.required_permission)
             user_desc = self.permission_manager.get_permission_description(user_level)
-            
+
             return False, f"权限不足，需要 {required_desc} 权限，当前权限: {user_desc}"
-        
+
         return True, "权限检查通过"
+
+    async def _check_auth_permission(self, event: Event, command: BaseCommand) -> Optional[CommandResponse]:
+        """检查密钥鉴权"""
+        # 如果指令标记为 always_allow，跳过检查
+        if getattr(command, 'always_allow', False):
+            return None
+
+        # 如果未启用鉴权，跳过检查
+        if not self.auth_manager.is_auth_enabled():
+            return None
+
+        # 检查Bot是否已通过鉴权
+        bot_id = str(event.self_id)
+        if await self.auth_manager.is_bot_authenticated(bot_id):
+            return None
+
+        # Bot未通过鉴权，返回提示
+        return CommandResponse(
+            result=CommandResult.PERMISSION_DENIED,
+            message="安全鉴权已启用，该Bot未验证，请先使用「{}鉴权」指令为该Bot进行验证".format(
+                self.config_manager.get_global_config().get("command_prefix", "bs")
+            )
+        )
     
     async def _generate_reply(self, event: Event, response: CommandResponse) -> Dict[str, Any]:
         """生成回复消息"""

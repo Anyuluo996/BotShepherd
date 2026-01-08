@@ -123,21 +123,32 @@
                     
                     <div class="mb-3">
                         <label for="clientEndpoint" class="form-label">客户端端点</label>
-                        <input type="text" class="form-control" id="clientEndpoint" 
+                        <input type="text" class="form-control" id="clientEndpoint"
                                placeholder="ws://localhost:2537/OneBotv11" required>
                         <div class="form-text">客户端连接的WebSocket地址</div>
                     </div>
-                    
+
+                    <div class="mb-3">
+                        <label class="form-label">客户端鉴权请求头 (可选)</label>
+                        <div id="clientHeadersList">
+                            <!-- 初始为空，点击添加按钮后动态添加 -->
+                        </div>
+                        <button type="button" class="btn btn-outline-primary btn-sm mt-2" onclick="addClientHeader()">
+                            <i class="bi bi-plus"></i>
+                            添加请求头
+                        </button>
+                        <div class="form-text mt-2">
+                            <strong>配置客户端连接时需要验证的请求头</strong><br>
+                            客户端连接时需要在请求头中携带匹配的值。参考格式：<br>
+                            <code>Authorization: Bearer your_token</code> 或 <code>X-Access-Token: secret_key</code><br>
+                            <small class="text-muted">留空则不启用鉴权，任何客户端都可以连接</small>
+                        </div>
+                    </div>
+
                     <div class="mb-3">
                         <label for="targetEndpoints" class="form-label">目标端点</label>
                         <div id="targetEndpointsList">
-                            <div class="input-group mb-2">
-                                <input type="text" class="form-control target-endpoint" 
-                                       placeholder="ws://localhost:2536/OneBotv11">
-                                <button class="btn btn-outline-danger" type="button" onclick="removeTargetEndpoint(this)">
-                                    <i class="bi bi-trash"></i>
-                                </button>
-                            </div>
+                            <!-- 初始为空，点击添加按钮后动态添加 -->
                         </div>
                         <button type="button" class="btn btn-outline-primary btn-sm" onclick="addTargetEndpoint()">
                             <i class="bi bi-plus"></i>
@@ -228,16 +239,22 @@ function updateConnectionStats() {
 function updateConnectionTable() {
     const tbody = document.querySelector('#connections-table tbody');
     tbody.innerHTML = '';
-    
+
     Object.entries(connections).forEach(([connectionId, connection]) => {
         const row = document.createElement('tr');
-        
-        const statusBadge = connection.enabled ? 
-            '<span class="badge bg-success">启用</span>' : 
+
+        const statusBadge = connection.enabled ?
+            '<span class="badge bg-success">启用</span>' :
             '<span class="badge bg-secondary">禁用</span>';
-        
-        const targetEndpoints = connection.target_endpoints.join('<br>');
-        
+
+        // 处理目标端点显示（支持字符串和对象格式）
+        const targetEndpoints = connection.target_endpoints.map(ep => {
+            const url = typeof ep === 'string' ? ep : ep.url;
+            const isgscore = typeof ep === 'object' && ep.sakoya_protocol;
+            const badge = isgscore ? ' <span class="badge bg-info">gscore</span>' : '';
+            return `<code>${url}</code>${badge}`;
+        }).join('<br>');
+
         row.innerHTML = `
             <td><code>${connectionId}</code></td>
             <td>${connection.name}</td>
@@ -261,7 +278,7 @@ function updateConnectionTable() {
                 </div>
             </td>
         `;
-        
+
         tbody.appendChild(row);
     });
 }
@@ -273,17 +290,13 @@ function showAddConnectionModal() {
     document.getElementById('connectionForm').reset();
     document.getElementById('connectionId').disabled = false; // 新建时启用ID输入
 
-    // 重置目标端点列表
+    // 重置客户端请求头列表为空
+    const clientHeadersList = document.getElementById('clientHeadersList');
+    clientHeadersList.innerHTML = '';
+
+    // 重置目标端点列表为空
     const targetList = document.getElementById('targetEndpointsList');
-    targetList.innerHTML = `
-        <div class="input-group mb-2">
-            <input type="text" class="form-control target-endpoint"
-                   placeholder="ws://localhost:2536/OneBotv11">
-            <button class="btn btn-outline-danger" type="button" onclick="removeTargetEndpoint(this)">
-                <i class="bi bi-trash"></i>
-            </button>
-        </div>
-    `;
+    targetList.innerHTML = '';
 
     new bootstrap.Modal(document.getElementById('connectionModal')).show();
 }
@@ -301,6 +314,20 @@ function editConnection(connectionId) {
     document.getElementById('clientEndpoint').value = connection.client_endpoint;
     document.getElementById('connectionEnabled').checked = connection.enabled;
 
+    // 填充客户端鉴权请求头
+    const clientHeadersList = document.getElementById('clientHeadersList');
+    clientHeadersList.innerHTML = '';
+
+    // 优先使用 client_headers，否则使用 api_key（向后兼容）
+    if (connection.client_headers) {
+        for (const [key, value] of Object.entries(connection.client_headers)) {
+            addClientHeaderField(clientHeadersList, key, value);
+        }
+    } else if (connection.api_key) {
+        // 向后兼容：将 api_key 转换为 Authorization 请求头
+        addClientHeaderField(clientHeadersList, 'Authorization', connection.api_key);
+    }
+
     // 填充目标端点
     const targetList = document.getElementById('targetEndpointsList');
     targetList.innerHTML = '';
@@ -309,23 +336,26 @@ function editConnection(connectionId) {
         // 兼容字符串格式和对象格式
         let url = '';
         let sakoyaProtocol = false;
+        let headers = {};
 
         if (typeof endpoint === 'string') {
             url = endpoint;
             sakoyaProtocol = false;
+            headers = {};
         } else if (typeof endpoint === 'object') {
             url = endpoint.url || '';
             sakoyaProtocol = endpoint.sakoya_protocol || false;
+            headers = endpoint.headers || {};
         }
 
-        addTargetEndpoint(url, sakoyaProtocol);
+        addTargetEndpoint(url, sakoyaProtocol, headers);
     });
 
     new bootstrap.Modal(document.getElementById('connectionModal')).show();
 }
 
 // 添加目标端点
-function addTargetEndpoint(url = '', sakoyaProtocol = false) {
+function addTargetEndpoint(url = '', sakoyaProtocol = false, headers = {}) {
     const targetList = document.getElementById('targetEndpointsList');
     const div = document.createElement('div');
     div.className = 'mb-2 p-3 border rounded position-relative';
@@ -338,24 +368,46 @@ function addTargetEndpoint(url = '', sakoyaProtocol = false) {
         </div>
         <input type="text" class="form-control mb-2 target-endpoint-url"
                placeholder="ws://localhost:2536/OneBotv11" value="${url}">
+        <div class="mb-2">
+            <label class="form-label">自定义请求头 (可选)</label>
+            <div class="target-headers-list">
+                <!-- 动态添加请求头 -->
+            </div>
+            <button type="button" class="btn btn-outline-secondary btn-sm mt-1" onclick="addTargetHeader(this)">
+                <i class="bi bi-plus"></i>
+                添加请求头
+            </button>
+            <div class="form-text mt-1">
+                连接到目标服务器时携带的请求头。参考格式：<br>
+                <code>Authorization: Bearer token</code> 或 <code>X-Api-Key: your_key</code>
+            </div>
+        </div>
         <div class="form-check">
             <input class="form-check-input target-endpoint-sakoya" type="checkbox" ${sakoyaProtocol ? 'checked' : ''}>
             <label class="form-check-label">
-                早柚协议 <span class="badge bg-info">Sakoya</span>
+                早柚协议 <span class="badge bg-info">gscore</span>
             </label>
             <div class="form-text">启用后将自动转换早柚协议和 OneBot v11 协议</div>
         </div>
     `;
     targetList.appendChild(div);
+
+    // 添加已有的请求头
+    const headersList = div.querySelector('.target-headers-list');
+    for (const [key, value] of Object.entries(headers)) {
+        addTargetHeaderField(headersList, key, value);
+    }
 }
 
 // 移除目标端点
 function removeTargetEndpoint(button) {
     const targetList = document.getElementById('targetEndpointsList');
-    if (targetList.children.length > 1) {
-        button.parentElement.remove();
+    // 找到包含按钮的最外层div（mb-2 p-3 border rounded position-relative）
+    const targetDiv = button.closest('.mb-2.p-3.border.rounded');
+    if (targetList.children.length > 0 && targetDiv) {
+        targetDiv.remove();
     } else {
-        showToast('至少需要一个目标端点', 'warning');
+        showToast('没有可删除的目标端点', 'warning');
     }
 }
 
@@ -368,6 +420,21 @@ async function saveConnection() {
         const clientEndpoint = document.getElementById('clientEndpoint').value.trim();
         const enabled = document.getElementById('connectionEnabled').checked;
 
+        // 收集客户端鉴权请求头
+        const clientHeaders = {};
+        document.querySelectorAll('#clientHeadersList > div').forEach(div => {
+            const keyInput = div.querySelector('.client-header-key');
+            const valueInput = div.querySelector('.client-header-value');
+            if (keyInput && valueInput) {
+                const key = keyInput.value.trim();
+                const value = valueInput.value.trim();
+                if (key && value) {
+                    // 请求头名称转为小写以保持一致性
+                    clientHeaders[key.toLowerCase()] = value;
+                }
+            }
+        });
+
         // 收集目标端点（支持对象格式）
         const targetEndpoints = [];
         document.querySelectorAll('#targetEndpointsList > div').forEach(div => {
@@ -376,16 +443,36 @@ async function saveConnection() {
             if (urlInput) {
                 const url = urlInput.value.trim();
                 if (url) {
-                    targetEndpoints.push({
+                    const endpointData = {
                         url: url,
                         sakoya_protocol: sakoyaCheckbox ? sakoyaCheckbox.checked : false
+                    };
+
+                    // 收集目标端点的自定义请求头
+                    const headers = {};
+                    div.querySelectorAll('.target-headers-list > div').forEach(headerDiv => {
+                        const keyInput = headerDiv.querySelector('.target-header-key');
+                        const valueInput = headerDiv.querySelector('.target-header-value');
+                        if (keyInput && valueInput) {
+                            const key = keyInput.value.trim();
+                            const value = valueInput.value.trim();
+                            if (key && value) {
+                                headers[key] = value;
+                            }
+                        }
                     });
+
+                    if (Object.keys(headers).length > 0) {
+                        endpointData.headers = headers;
+                    }
+
+                    targetEndpoints.push(endpointData);
                 }
             }
         });
 
-        if (!name || !clientEndpoint || targetEndpoints.length === 0) {
-            showToast('请填写所有必需字段', 'warning');
+        if (!name || !clientEndpoint) {
+            showToast('请填写连接名称和客户端端点', 'warning');
             return;
         }
 
@@ -402,6 +489,16 @@ async function saveConnection() {
             target_endpoints: targetEndpoints,
             enabled
         };
+
+        // 如果有客户端鉴权请求头，添加到连接数据
+        if (Object.keys(clientHeaders).length > 0) {
+            // 为了向后兼容，如果只有 authorization 头，将其作为 api_key 存储
+            if (Object.keys(clientHeaders).length === 1 && clientHeaders.authorization) {
+                connectionData.api_key = clientHeaders.authorization;
+            } else {
+                connectionData.client_headers = clientHeaders;
+            }
+        }
 
         // 确定最终使用的connectionId
         let finalConnectionId;
@@ -498,8 +595,8 @@ function showConnectionDetail(connectionId) {
                     <tr><td>目标端点</td><td>
                         ${connection.target_endpoints.map(ep => {
                             const url = typeof ep === 'string' ? ep : ep.url;
-                            const isSakoya = typeof ep === 'object' && ep.sakoya_protocol;
-                            const badge = isSakoya ? ' <span class="badge bg-info">Sakoya</span>' : '';
+                            const isgscore = typeof ep === 'object' && ep.sakoya_protocol;
+                            const badge = isgscore ? ' <span class="badge bg-info">gscore</span>' : '';
                             return `<code>${url}</code>${badge}`;
                         }).join('<br>')}
                     </td></tr>
@@ -510,6 +607,61 @@ function showConnectionDetail(connectionId) {
     
     document.getElementById('connectionDetailContent').innerHTML = content;
     new bootstrap.Modal(document.getElementById('connectionDetailModal')).show();
+}
+
+// ==================== 客户端请求头管理 ====================
+
+// 添加客户端请求头按钮点击事件
+function addClientHeader() {
+    const clientHeadersList = document.getElementById('clientHeadersList');
+    addClientHeaderField(clientHeadersList);
+}
+
+// 添加客户端请求头字段
+function addClientHeaderField(container, key = '', value = '') {
+    const div = document.createElement('div');
+    div.className = 'input-group mb-2';
+    div.innerHTML = `
+        <input type="text" class="form-control client-header-key" placeholder="请求头名称 (如 Authorization)" value="${key}">
+        <input type="text" class="form-control client-header-value" placeholder="值 (如 Bearer token123)" value="${value}">
+        <button class="btn btn-outline-danger" type="button" onclick="removeClientHeader(this)">
+            <i class="bi bi-trash"></i>
+        </button>
+    `;
+    container.appendChild(div);
+}
+
+// 删除客户端请求头
+function removeClientHeader(button) {
+    button.closest('.input-group').remove();
+}
+
+// ==================== 目标端点请求头管理 ====================
+
+// 添加目标端点请求头按钮点击事件
+function addTargetHeader(button) {
+    const targetDiv = button.closest('.mb-2.p-3.border.rounded');
+    const headersList = targetDiv.querySelector('.target-headers-list');
+    addTargetHeaderField(headersList);
+}
+
+// 添加目标端点请求头字段
+function addTargetHeaderField(container, key = '', value = '') {
+    const div = document.createElement('div');
+    div.className = 'input-group input-group-sm mb-1';
+    div.innerHTML = `
+        <input type="text" class="form-control target-header-key" placeholder="请求头名称" value="${key}">
+        <input type="text" class="form-control target-header-value" placeholder="值" value="${value}">
+        <button class="btn btn-outline-secondary" type="button" onclick="removeTargetHeader(this)">
+            <i class="bi bi-trash"></i>
+        </button>
+    `;
+    container.appendChild(div);
+}
+
+// 删除目标端点请求头
+function removeTargetHeader(button) {
+    button.closest('.input-group').remove();
 }
 </script>
 {% endblock %}

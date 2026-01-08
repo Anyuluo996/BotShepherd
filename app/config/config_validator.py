@@ -31,7 +31,8 @@ class ConfigValidator:
             "message_normalization": dict,
             "sendcount_notifications": bool,
             "web_auth": dict,
-            "web_port": int
+            "web_port": int,
+            "security": dict
         }
         
         for field, expected_type in required_fields.items():
@@ -120,6 +121,16 @@ class ConfigValidator:
                         if not isinstance(web_auth[field], str) or len(web_auth[field]) == 0:
                             errors.append(f"web_auth.{field} 不能为空")
 
+        # 验证API密钥配置
+        if "api_keys" in config:
+            api_keys = config["api_keys"]
+            if not isinstance(api_keys, list):
+                errors.append("api_keys 必须是列表")
+            else:
+                for i, key in enumerate(api_keys):
+                    if not isinstance(key, str) or len(key) == 0:
+                        errors.append(f"api_keys[{i}] 必须是非空字符串")
+
         # 验证备份配置（可选字段，向后兼容）
         if "backup" in config:
             backup = config["backup"]
@@ -130,6 +141,21 @@ class ConfigValidator:
                     keep_days = backup["keep_days"]
                     if not isinstance(keep_days, int) or keep_days < 1:
                         errors.append("backup.keep_days 必须是大于等于1的整数")
+
+        # 验证安全配置
+        if "security" in config:
+            security = config["security"]
+            if isinstance(security, dict):
+                if "auth_enabled" in security and not isinstance(security["auth_enabled"], bool):
+                    errors.append("security.auth_enabled 必须是布尔值")
+                if "max_attempts" in security:
+                    max_attempts = security["max_attempts"]
+                    if not isinstance(max_attempts, int) or max_attempts < 1 or max_attempts > 10:
+                        errors.append("security.max_attempts 必须是1-10之间的整数")
+                if "ban_duration" in security:
+                    ban_duration = security["ban_duration"]
+                    if not isinstance(ban_duration, int) or ban_duration < 1 or ban_duration > 1440:
+                        errors.append("security.ban_duration 必须是1-1440分钟之间的整数")
 
         return len(errors) == 0, errors
     
@@ -152,6 +178,12 @@ class ConfigValidator:
                 errors.append(f"缺少必需字段: {field}")
             elif not isinstance(config[field], expected_type):
                 errors.append(f"字段 {field} 类型错误，期望 {expected_type.__name__}")
+
+        # 验证API密钥（可选）
+        if "api_key" in config:
+            api_key = config["api_key"]
+            if api_key != "" and (not isinstance(api_key, str) or len(api_key) == 0):
+                errors.append("api_key 必须是非空字符串")
 
         # 验证名称和描述
         if "name" in config:
@@ -179,7 +211,7 @@ class ConfigValidator:
                         if isinstance(endpoint, str):
                             if not ConfigValidator._validate_websocket_url(endpoint):
                                 errors.append(f"target_endpoints[{i}] 格式无效: {endpoint}")
-                        # 对象格式 {url: "...", sakoya_protocol: bool}
+                        # 对象格式 {url: "...", sakoya_protocol: bool, headers: {}}
                         elif isinstance(endpoint, dict):
                             if "url" not in endpoint:
                                 errors.append(f"target_endpoints[{i}] 缺少 url 字段")
@@ -187,6 +219,17 @@ class ConfigValidator:
                                 errors.append(f"target_endpoints[{i}] url 格式无效: {endpoint['url']}")
                             if "sakoya_protocol" in endpoint and not isinstance(endpoint["sakoya_protocol"], bool):
                                 errors.append(f"target_endpoints[{i}] sakoya_protocol 必须是布尔值")
+                            # 验证自定义请求头
+                            if "headers" in endpoint:
+                                headers = endpoint["headers"]
+                                if not isinstance(headers, dict):
+                                    errors.append(f"target_endpoints[{i}] headers 必须是字典")
+                                else:
+                                    for key, value in headers.items():
+                                        if not isinstance(key, str) or len(key) == 0:
+                                            errors.append(f"target_endpoints[{i}] headers 中的键必须是非空字符串")
+                                        if not isinstance(value, str):
+                                            errors.append(f"target_endpoints[{i}] headers[{key}] 的值必须是字符串")
                         else:
                             errors.append(f"target_endpoints[{i}] 必须是字符串或对象")
 
@@ -373,7 +416,9 @@ class ConfigTemplate:
             "sendcount_notifications": True,
             "web_auth": {
                 "username": "admin",
-                "password": "admin"
+                "password": "admin",
+                "root_redirect": "https://github.com/Loping151/BotShepherd",
+                "webui_path": "bs"
             },
             "web_port": 5111,
             "auto_save_interval": 10,  # 自动保存间隔（分钟），最小1分钟
@@ -381,6 +426,12 @@ class ConfigTemplate:
             "backup": {
                 "enabled": True,  # 是否启用自动备份
                 "keep_days": 7  # 备份保留天数
+            },
+            "api_keys": [],  # API密钥列表，用于连接鉴权，为空则不启用鉴权
+            "security": {
+                "auth_enabled": False,  # 是否启用密钥鉴权
+                "max_attempts": 3,  # 最大验证失败次数
+                "ban_duration": 30  # 封禁时长（分钟）
             }
         }
     
@@ -391,8 +442,13 @@ class ConfigTemplate:
             "name": "新连接",
             "description": "连接描述",
             "client_endpoint": "ws://localhost:2537/OneBotv11",
+            "api_key": "",  # 可选：客户端连接鉴权Token，客户端需在请求头中携带，留空则不鉴权
             "target_endpoints": [
-                {"url": "ws://localhost:2536/OneBotv11", "sakoya_protocol": False}
+                {
+                    "url": "ws://localhost:2536/OneBotv11",
+                    "sakoya_protocol": False,
+                    "headers": {}  # 可选：自定义请求头，如 {"Authorization": "Basic token"}
+                }
             ],
             "enabled": True
         }

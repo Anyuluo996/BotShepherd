@@ -13,7 +13,14 @@
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <!-- Marked.js for markdown parsing -->
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-    
+
+    <!-- WebUI 路径配置 -->
+    <script>
+        // WebUI 路径前缀，从后端注入
+        window.WEBUI_PREFIX = "{{ webui_prefix_slash|default('/bs/') }}";
+        window.WEBUI_PATH = "{{ webui_path|default('bs') }}";
+    </script>
+
     <!-- 自定义样式 -->
     <style>
         :root {
@@ -305,47 +312,8 @@
             <!-- 侧边栏 -->
             <div class="col-md-2 p-0">
                 <div class="sidebar">
-                    <nav class="nav flex-column">
-                        <a class="nav-link" href="/">
-                            <i class="bi bi-speedometer2"></i>
-                            仪表板
-                        </a>
-                        <a class="nav-link" href="/connections">
-                            <i class="bi bi-diagram-3"></i>
-                            连接管理
-                        </a>
-                        <a class="nav-link" href="/accounts">
-                            <i class="bi bi-person-gear"></i>
-                            账号管理
-                        </a>
-                        <a class="nav-link" href="/groups">
-                            <i class="bi bi-people"></i>
-                            群组管理
-                        </a>
-                        <a class="nav-link" href="/statistics">
-                            <i class="bi bi-graph-up"></i>
-                            统计分析
-                        </a>
-                        <a class="nav-link" href="/query">
-                            <i class="bi bi-search"></i>
-                            消息查询
-                        </a>
-                        <a class="nav-link" href="/filters">
-                            <i class="bi bi-funnel"></i>
-                            过滤设置
-                        </a>
-                        <a class="nav-link" href="/logs">
-                            <i class="bi bi-file-text"></i>
-                            日志查看
-                        </a>
-                        <a class="nav-link" href="/backups">
-                            <i class="bi bi-archive"></i>
-                            备份管理
-                        </a>
-                        <a class="nav-link" href="/settings">
-                            <i class="bi bi-gear"></i>
-                            系统设置
-                        </a>
+                    <nav class="nav flex-column" id="sidebar-nav">
+                        <!-- 导航链接将由 JavaScript 动态生成 -->
                     </nav>
                 </div>
             </div>
@@ -403,6 +371,14 @@
         // API请求封装
         async function apiRequest(url, options = {}) {
             try {
+                // 自动添加 WebUI 路径前缀（如果还没有）
+                if (!url.startsWith('/')) {
+                    url = '/' + url;
+                }
+                if (!url.startsWith(window.WEBUI_PREFIX)) {
+                    url = window.WEBUI_PREFIX.replace(/\/$/, '') + url;
+                }
+
                 const response = await fetch(url, {
                     headers: {
                         'Content-Type': 'application/json',
@@ -410,17 +386,55 @@
                     },
                     ...options
                 });
-                
+
                 if (!response.ok) {
                     throw new Error(`HTTP ${response.status}: ${response.statusText}`);
                 }
-                
+
                 return await response.json();
             } catch (error) {
                 showToast(`请求失败: ${error.message}`, 'danger');
                 throw error;
             }
         }
+
+        // 动态生成导航链接
+        function generateSidebarNav() {
+            const navItems = [
+                { icon: 'bi-speedometer2', text: '仪表板', path: '/' },
+                { icon: 'bi-diagram-3', text: '连接管理', path: '/connections' },
+                { icon: 'bi-person-gear', text: '账号管理', path: '/accounts' },
+                { icon: 'bi-people', text: '群组管理', path: '/groups' },
+                { icon: 'bi-graph-up', text: '统计分析', path: '/statistics' },
+                { icon: 'bi-search', text: '消息查询', path: '/query' },
+                { icon: 'bi-funnel', text: '过滤设置', path: '/filters' },
+                { icon: 'bi-file-text', text: '日志查看', path: '/logs' },
+                { icon: 'bi-archive', text: '备份管理', path: '/backups' },
+                { icon: 'bi-gear', text: '系统设置', path: '/settings' }
+            ];
+
+            const currentPath = window.location.pathname;
+            const navContainer = document.getElementById('sidebar-nav');
+
+            navItems.forEach(item => {
+                const fullPath = window.WEBUI_PREFIX.replace(/\/$/, '') + item.path;
+                const isActive = currentPath === fullPath;
+
+                const link = document.createElement('a');
+                link.className = `nav-link ${isActive ? 'active' : ''}`;
+                link.href = fullPath;
+                link.innerHTML = `
+                    <i class="bi ${item.icon}"></i>
+                    ${item.text}
+                `;
+                navContainer.appendChild(link);
+            });
+        }
+
+        // 页面加载完成后生成导航
+        document.addEventListener('DOMContentLoaded', function() {
+            generateSidebarNav();
+        });
 
         // 刷新所有数据
         async function refreshAllData() {

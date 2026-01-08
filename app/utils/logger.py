@@ -2,6 +2,197 @@ import logging
 import logging.handlers
 from pathlib import Path
 from datetime import datetime
+import sys
+import re
+
+# ANSI 颜色代码
+class ANSIColors:
+    """ANSI 颜色代码"""
+    RESET = '\033[0m'
+    BOLD = '\033[1m'
+    DIM = '\033[2m'
+    ITALIC = '\033[3m'
+    UNDERLINE = '\033[4m'
+
+    # 前景色
+    BLACK = '\033[30m'
+    RED = '\033[31m'
+    GREEN = '\033[32m'
+    YELLOW = '\033[33m'
+    BLUE = '\033[34m'
+    MAGENTA = '\033[35m'
+    CYAN = '\033[36m'
+    WHITE = '\033[37m'
+
+    # 明亮的前景色
+    BRIGHT_BLACK = '\033[90m'
+    BRIGHT_RED = '\033[91m'
+    BRIGHT_GREEN = '\033[92m'
+    BRIGHT_YELLOW = '\033[93m'
+    BRIGHT_BLUE = '\033[94m'
+    BRIGHT_MAGENTA = '\033[95m'
+    BRIGHT_CYAN = '\033[96m'
+    BRIGHT_WHITE = '\033[97m'
+
+    # 背景色
+    BG_BLACK = '\033[40m'
+    BG_RED = '\033[41m'
+    BG_GREEN = '\033[42m'
+    BG_YELLOW = '\033[43m'
+    BG_BLUE = '\033[44m'
+    BG_MAGENTA = '\033[45m'
+    BG_CYAN = '\033[46m'
+    BG_WHITE = '\033[47m'
+
+
+class ColoredFormatter(logging.Formatter):
+    """带颜色的日志格式化器"""
+
+    # 日志级别对应的颜色
+    LOG_COLORS = {
+        logging.DEBUG: ANSIColors.DIM + ANSIColors.CYAN,
+        logging.INFO: ANSIColors.GREEN,
+        logging.WARNING: ANSIColors.YELLOW + ANSIColors.BOLD,
+        logging.ERROR: ANSIColors.RED + ANSIColors.BOLD,
+        logging.CRITICAL: ANSIColors.BRIGHT_RED + ANSIColors.BOLD + ANSIColors.UNDERLINE,
+    }
+
+    # 组件名称的颜色
+    COMPONENT_COLORS = {
+        'BotShepherd': ANSIColors.BOLD + ANSIColors.BRIGHT_BLUE,
+        'WebSocket': ANSIColors.CYAN,
+        'Message': ANSIColors.MAGENTA,
+        'Web': ANSIColors.BLUE,
+        'Command': ANSIColors.BRIGHT_YELLOW,
+        'Operation': ANSIColors.BRIGHT_MAGENTA,
+    }
+
+    # 高亮关键词
+    HIGHLIGHT_PATTERNS = {
+        '成功': ANSIColors.GREEN + ANSIColors.BOLD,
+        'SUCCESS': ANSIColors.GREEN + ANSIColors.BOLD,
+        '✅': ANSIColors.GREEN + ANSIColors.BOLD,
+        '完成': ANSIColors.GREEN + ANSIColors.BOLD,
+        '启动': ANSIColors.BRIGHT_GREEN,
+        '已连接': ANSIColors.GREEN,
+
+        '错误': ANSIColors.RED + ANSIColors.BOLD,
+        'ERROR': ANSIColors.RED + ANSIColors.BOLD,
+        '失败': ANSIColors.RED + ANSIColors.BOLD,
+        '❌': ANSIColors.RED + ANSIColors.BOLD,
+        '异常': ANSIColors.RED,
+        'Exception': ANSIColors.RED,
+
+        '警告': ANSIColors.YELLOW + ANSIColors.BOLD,
+        'WARNING': ANSIColors.YELLOW + ANSIColors.BOLD,
+        '⚠': ANSIColors.YELLOW + ANSIColors.BOLD,
+        '注意': ANSIColors.YELLOW,
+
+        '信息': ANSIColors.CYAN,
+        'INFO': ANSIColors.CYAN,
+        'ℹ': ANSIColors.CYAN,
+
+        '发送': ANSIColors.BLUE,
+        'SENT': ANSIColors.BLUE,
+        '➡': ANSIColors.BLUE,
+
+        '接收': ANSIColors.MAGENTA,
+        'RECV': ANSIColors.MAGENTA,
+        '⬅': ANSIColors.MAGENTA,
+    }
+
+    def __init__(self, fmt=None, datefmt=None, style='%'):
+        super().__init__(fmt, datefmt, style)
+        self.use_colors = self._supports_color()
+        # URL 匹配正则表达式（匹配 http、https、ws、wss 协议）
+        self.url_pattern = re.compile(
+            r'(\b(?:https?|wss?)://[-\w.]+(?:[:/][-\w./?%&=+#]*)?)',
+            re.IGNORECASE
+        )
+
+    def _highlight_urls(self, text):
+        """高亮文本中的 URL 链接"""
+        if not self.use_colors:
+            return text
+
+        def replace_url(match):
+            url = match.group(1)
+            # 使用蓝色和下划线高亮 URL
+            return ANSIColors.BLUE + ANSIColors.UNDERLINE + url + ANSIColors.RESET
+
+        return self.url_pattern.sub(replace_url, text)
+
+    def _supports_color(self):
+        """检测终端是否支持颜色"""
+        # Windows 检查
+        if sys.platform == 'win32':
+            try:
+                import ctypes
+                kernel32 = ctypes.windll.kernel32
+                kernel32.SetConsoleMode(kernel32.GetStdHandle(-11), 7)
+                return True
+            except:
+                # 检查是否在支持 ANSI 的终端中运行
+                return ('TERM' in os.environ or
+                        'COLORTERM' in os.environ or
+                        'ANSICON' in os.environ)
+
+        # Unix/Linux/Mac 检查
+        if hasattr(sys.stdout, 'isatty') and sys.stdout.isatty():
+            return True
+
+        # 检查环境变量
+        if os.environ.get('TERM', '') != '':
+            return True
+
+        return False
+
+    def format(self, record):
+        # 如果不支持颜色，使用原始格式化
+        if not self.use_colors:
+            return super().format(record)
+
+        # 获取原始格式化结果
+        formatted = super().format(record)
+
+        # 添加级别颜色
+        levelname = record.levelname
+        level_color = self.LOG_COLORS.get(record.levelno, '')
+        if level_color:
+            formatted = formatted.replace(levelname, level_color + levelname + ANSIColors.RESET)
+
+        # 添加组件名称颜色
+        if hasattr(record, 'name'):
+            for comp, color in self.COMPONENT_COLORS.items():
+                if comp in record.name:
+                    formatted = formatted.replace(comp, color + comp + ANSIColors.RESET)
+                    break
+
+        # 高亮关键词
+        for pattern, color in self.HIGHLIGHT_PATTERNS.items():
+            if pattern in formatted:
+                # 只高亮第一个匹配，避免重复替换
+                parts = formatted.split(pattern)
+                if len(parts) > 1:
+                    result = []
+                    result.append(parts[0])
+                    for i, part in enumerate(parts[1:], 1):
+                        # 确保不在已着色的文本中添加颜色
+                        if not result[-1].endswith(ANSIColors.RESET):
+                            result.append(color + pattern + ANSIColors.RESET)
+                        else:
+                            result.append(pattern + ANSIColors.RESET)
+                        result.append(part)
+                    formatted = ''.join(result)
+
+        # 高亮 URL 链接
+        formatted = self._highlight_urls(formatted)
+
+        return formatted
+
+
+# 导入 os 用于检测颜色支持
+import os
 
 class BSLogger:
 
@@ -47,14 +238,15 @@ class BSLogger:
         self.main_logger.handlers.clear()
         self.main_logger.propagate = False
 
-        # 控制台处理器
+        # 控制台处理器 - 使用带颜色的格式化器
         self.console_handler = logging.StreamHandler()
-        self.console_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+        console_format = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        self.console_handler.setFormatter(ColoredFormatter(console_format))
         self.main_logger.addHandler(self.console_handler)
 
         # 主日志文件处理器（带轮转）
         file_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(funcName)s:%(lineno)d - %(message)s')
-        
+
         if self.config["file_rotation"]:
             # 按时间轮转
             handler = logging.handlers.TimedRotatingFileHandler(
@@ -73,19 +265,21 @@ class BSLogger:
                 backupCount=self.keep_days, # 使用 keep_days 作为备份数量
                 encoding="utf-8"
             )
-        
+
         handler.setFormatter(file_formatter)
         self.main_logger.addHandler(handler)
 
-    def _setup_special_logger(self, name, sub_dir, rotate=True, use_timed_rotation=True, formatter=None, console_formatter=None):
+    def _setup_special_logger(self, name, sub_dir, rotate=True, use_timed_rotation=True, formatter=None, console_formatter=None, use_colors=True):
         """
         创建一个专用的子日志记录器。
-        
+
         :param name: 日志记录器名称 (e.g., "WebSocket")
         :param sub_dir: 日志存放的子目录 (e.g., "websocket")
         :param rotate: 是否需要轮转。如果为 False，则使用 FileHandler。
         :param use_timed_rotation: 如果 rotate=True，此参数决定是按时间还是大小轮转。
         :param formatter: 自定义日志格式。如果为 None，使用默认格式。
+        :param console_formatter: 自定义控制台格式。如果为 None，使用带颜色的格式。
+        :param use_colors: 是否在控制台使用颜色。默认为 True。
         :return: 配置好的 logging.Logger 实例。
         """
         logger_name = f"BotShepherd.{name}"
@@ -93,14 +287,24 @@ class BSLogger:
         logger.setLevel(self.log_level)
         logger.handlers.clear()
         logger.propagate = False  # 防止日志向上传播到主日志记录器
-        
+
+        # 控制台处理器
         if console_formatter:
             # 复制一份，避免修改共享的 handler
             console_handler_copy = logging.StreamHandler()
             console_handler_copy.setFormatter(console_formatter)
             logger.addHandler(console_handler_copy)
         else:
-            logger.addHandler(self.console_handler)
+            # 为专用日志创建带颜色的控制台格式化器
+            if use_colors:
+                # 创建更简洁的控制台格式
+                console_format = '%(asctime)s - %(levelname)s - %(message)s'
+                colored_formatter = ColoredFormatter(console_format)
+                console_handler_copy = logging.StreamHandler()
+                console_handler_copy.setFormatter(colored_formatter)
+                logger.addHandler(console_handler_copy)
+            else:
+                logger.addHandler(self.console_handler)
 
         # 创建专用日志目录
         special_log_dir = self.log_dir / sub_dir
@@ -129,14 +333,14 @@ class BSLogger:
                 backupCount=self.keep_days,
                 encoding="utf-8"
             )
-        
+
         # 设置格式化器
         if formatter:
             handler.setFormatter(formatter)
         else:
             default_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
             handler.setFormatter(default_formatter)
-        
+
         logger.addHandler(handler)
         return logger
 

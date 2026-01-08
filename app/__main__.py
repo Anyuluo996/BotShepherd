@@ -35,8 +35,12 @@ def import_app_modules():
 # 尝试导入模块，失败时自动安装依赖
 success, import_err = try_import_with_install(import_app_modules)
 if not success and import_err:
-    print("请先运行初始化命令: uv run bs --setup")
-    print("如已指定 --setup 请忽略")
+    print("❌ 依赖安装失败")
+    print("请确保已通过 uv 安装所有依赖，或手动运行: uv sync")
+    if sys.platform == "win32":
+        print("如已经完成初始化，请使用 ./venv/Scripts/python.exe main.py")
+    else:
+        print("如已经完成初始化，请使用 ./venv/bin/python main.py")
     sys.exit(1)
 
 import_app_modules()
@@ -101,7 +105,8 @@ class BotShepherd:
                 proxy_server=self.proxy_server,
                 logger=self.logger,
                 port=self.config_manager.get_global_config().get("web_port", 5100),
-                loop=asyncio.get_event_loop()
+                loop=asyncio.get_event_loop(),
+                backup_manager=self.backup_manager
             )
 
             self.logger.info("系统组件初始化完成")
@@ -401,13 +406,16 @@ async def main():
 
     if args.setup:
         await setup_initial_config()
+        print("\n✅ 初始化完成！可以开始使用 BotShepherd 了")
         return
 
     # 检查配置文件是否存在
     if not check_config_exists():
-        print("❌ 错误: 配置文件不存在")
-        print("请先运行初始化命令: uv run bs --setup")
-        sys.exit(1)
+        print("检测到配置文件不存在，正在执行自动初始化...")
+        print("请稍候...")
+        await setup_initial_config()
+        print("\n✅ 初始化完成！正在启动 BotShepherd...")
+        print()
 
     # 创建并启动BotShepherd
     global app_instance

@@ -3,7 +3,7 @@
 使用SQLAlchemy定义数据库表结构
 """
 
-from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean, Index, BigInteger
+from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean, Index, BigInteger, Float
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.sql import func
 import json
@@ -42,6 +42,28 @@ class Message(Base):
         Index('idx_messages_content_search', 'message_content'),
     )
 
+
+class AuthStatus(Base):
+    """鉴权状态表 - 持久化Bot鉴权和封禁状态"""
+    __tablename__ = 'auth_status'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    bot_id = Column(String(20), nullable=False, unique=True, index=True)  # Bot账号ID
+    is_authenticated = Column(Boolean, default=False)  # 是否已通过鉴权
+    authenticated_at = Column(DateTime)  # 鉴权通过时间
+    # 封禁相关
+    failed_attempts = Column(Integer, default=0)  # 失败尝试次数
+    is_banned = Column(Boolean, default=False)  # 是否被封禁
+    banned_until = Column(DateTime)  # 封禁到期时间
+    last_attempt_at = Column(DateTime)  # 最后一次尝试时间
+    created_at = Column(DateTime, default=func.now())
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+
+    # 创建索引
+    __table_args__ = (
+        Index('idx_auth_status_bot_id', 'bot_id'),
+        Index('idx_auth_status_is_banned', 'is_banned'),
+    )
 
 
 @dataclass

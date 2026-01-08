@@ -1,0 +1,90 @@
+name: Build and Push Docker Image
+
+on:
+  push:
+    branches:
+      - v2
+  workflow_dispatch:  # 允许手动触发
+
+env:
+  DOCKER_IMAGE_NAME: botshepherd
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 步骤 1: 检出代码
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # 获取完整的 git 历史，用于版本标签
+
+      # 步骤 2: 获取版本信息
+      - name: Get version info
+        id: version_info
+        run: |
+          # 从 pyproject.toml 读取版本号
+          VERSION=$(grep '^version = ' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+
+      # 步骤 3: 设置 QEMU（支持多平台构建）
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      # 步骤 4: 设置 Docker Buildx
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # 步骤 5: 登录到 Docker Hub
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # 步骤 6: 登录到 CNB 仓库
+      - name: Login to CNB Registry
+        uses: docker/login-action@v3
+        with:
+          registry: docker.cnb.cool
+          username: cnb
+          password: ${{ secrets.CNB_TOKEN }}
+
+      # 步骤 7: 构建并推送 Docker 镜像到两个仓库
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64  # 多平台支持
+          push: true
+          tags: |
+            # Docker Hub 标签
+            ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.DOCKER_IMAGE_NAME }}:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.DOCKER_IMAGE_NAME }}:${{ steps.version_info.outputs.version }}
+            # CNB 仓库标签
+            docker.cnb.cool/anyuluo/dockerimages/${{ env.DOCKER_IMAGE_NAME }}:latest
+            docker.cnb.cool/anyuluo/dockerimages/${{ env.DOCKER_IMAGE_NAME }}:${{ steps.version_info.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false  # 禁用 provenance 以提高兼容性
+
+      # 步骤 8: 输出构建信息
+      - name: Image build summary
+        run: |
+          echo "### Docker 镜像构建成功! :rocket:" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**版本信息:**" >> $GITHUB_STEP_SUMMARY
+          echo "- 版本号: \`${{ steps.version_info.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**镜像标签:**" >> $GITHUB_STEP_SUMMARY
+          echo '```bash' >> $GITHUB_STEP_SUMMARY
+          echo "# Docker Hub" >> $GITHUB_STEP_SUMMARY
+          echo "docker pull ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.DOCKER_IMAGE_NAME }}:latest" >> $GITHUB_STEP_SUMMARY
+          echo "docker pull ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.DOCKER_IMAGE_NAME }}:${{ steps.version_info.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "# CNB 仓库" >> $GITHUB_STEP_SUMMARY
+          echo "docker pull docker.cnb.cool/anyuluo/dockerimages/${{ env.DOCKER_IMAGE_NAME }}:latest" >> $GITHUB_STEP_SUMMARY
+          echo "docker pull docker.cnb.cool/anyuluo/dockerimages/${{ env.DOCKER_IMAGE_NAME }}:${{ steps.version_info.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY

@@ -1,5 +1,5 @@
 """
-早柚协议 (Sakoya) 数据模型
+早柚协议 (gscore) 数据模型
 定义 GenshinUID-core 使用的 WebSocket 协议数据结构
 使用 msgspec 以确保类型安全，与官方适配器保持一致
 """

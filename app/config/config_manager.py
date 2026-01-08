@@ -118,7 +118,17 @@ class ConfigManager:
         if global_config_file.exists():
             try:
                 with open(global_config_file, 'r', encoding='utf-8') as f:
-                    self._global_config = json.load(f)
+                    loaded_config = json.load(f)
+
+                # 合并默认配置以确保新字段存在（向后兼容）
+                default_config = ConfigTemplate.get_default_global_config()
+                self._global_config = self._deep_merge_configs(default_config, loaded_config)
+
+                # 检查是否有新字段需要保存
+                if len(loaded_config) < len(default_config):
+                    self.log("检测到新配置字段，正在更新配置文件...")
+                    await self._save_global_config()
+
             except Exception as e:
                 self.log(f"加载全局配置失败: {e}", "warning")
                 # 备份损坏的配置文件
@@ -129,6 +139,24 @@ class ConfigManager:
         else:
             self._global_config = ConfigTemplate.get_default_global_config()
             await self._save_global_config()
+
+    def _deep_merge_configs(self, default: dict, loaded: dict) -> dict:
+        """深度合并配置，保留用户自定义值，添加缺失的新字段"""
+        result = default.copy()
+
+        for key, value in loaded.items():
+            if key in result:
+                # 如果都是字典，递归合并
+                if isinstance(result[key], dict) and isinstance(value, dict):
+                    result[key] = self._deep_merge_configs(result[key], value)
+                else:
+                    # 使用用户自定义的值
+                    result[key] = value
+            else:
+                # 保留用户添加的额外字段
+                result[key] = value
+
+        return result
     
     async def _load_connections_config(self):
         """加载连接配置"""
@@ -835,7 +863,7 @@ class ConfigManager:
         self._ensure_directories()
 
         # 创建默认全局配置
-        self._global_config = self._get_default_global_config()
+        self._global_config = ConfigTemplate.get_default_global_config()
         await self._save_global_config()
 
         # 创建示例连接配置

@@ -189,6 +189,11 @@ class UnifiedProxyServer:
                     await ws.close(1011, "连接配置不存在")
                     return
 
+                # 鉴权验证
+                if not await self._authenticate_connection(ws, connection_id, config):
+                    await ws.close(4003, "鉴权失败：无效的 API 密钥")
+                    return
+
                 # 处理连接
                 await self._handle_client_connection(ws, path, connection_id, config)
 
@@ -268,6 +273,77 @@ class UnifiedProxyServer:
             self.logger.ws.info(
                 f"[{connection_id}] 客户端连接已关闭: {client_ip}, 路径: {path}"
             )
+
+    async def _authenticate_connection(self, ws, connection_id: str, config: dict) -> bool:
+        """
+        验证连接的鉴权信息
+
+        支持多种鉴权方式：
+        1. client_headers: 多个请求头验证（新方式）
+        2. api_key: 单个 Authorization 头验证（向后兼容）
+
+        Args:
+            ws: WebSocket 连接
+            connection_id: 连接ID
+            config: 连接配置
+
+        Returns:
+            是否通过鉴权
+        """
+        # 从WebSocket请求头中获取
+        request_headers = getattr(ws, 'request_headers', {})
+        if not request_headers and hasattr(ws, 'request'):
+            request_headers = getattr(ws.request, 'headers', {})
+
+        # 优先使用 client_headers 进行多请求头验证
+        client_headers = config.get("client_headers", {})
+        if client_headers:
+            # 将请求头名称转为小写进行匹配
+            request_headers_lower = {k.lower(): v for k, v in request_headers.items()}
+
+            # 检查所有配置的请求头是否匹配
+            for expected_key, expected_value in client_headers.items():
+                actual_value = request_headers_lower.get(expected_key.lower(), "")
+
+                # 验证：支持直接匹配、Basic/Bearer 前缀
+                if not (actual_value == expected_value or
+                       actual_value == f"Basic {expected_value}" or
+                       actual_value == f"Bearer {expected_value}"):
+                    self.logger.ws.warning(
+                        f"[{connection_id}] 鉴权失败：{expected_key} 请求头不匹配 "
+                        f"(期望: {expected_value}, 实际: {actual_value})"
+                    )
+                    return False
+
+            self.logger.ws.debug(f"[{connection_id}] 多请求头鉴权验证通过")
+            return True
+
+        # 向后兼容：使用 api_key 进行单一 Authorization 头验证
+        expected_token = config.get("api_key", "")
+
+        # 如果连接配置中没有设置鉴权token，则不启用鉴权
+        if not expected_token:
+            return True
+
+        # 检查 Authorization 请求头
+        auth_header = request_headers.get('authorization', '')
+        if not auth_header:
+            self.logger.ws.warning(f"[{connection_id}] 缺少 Authorization 请求头")
+            return False
+
+        # 验证 Authorization 是否与期望的token匹配
+        # 支持多种格式：
+        # 1. 直接匹配: auth_header == expected_token
+        # 2. Basic 认证: auth_header == "Basic " + expected_token
+        # 3. Bearer 认证: auth_header == "Bearer " + expected_token
+        if (auth_header == expected_token or
+            auth_header == f"Basic {expected_token}" or
+            auth_header == f"Bearer {expected_token}"):
+            self.logger.ws.debug(f"[{connection_id}] 鉴权验证通过")
+            return True
+
+        self.logger.ws.warning(f"[{connection_id}] 鉴权失败：无效的 Authorization 请求头")
+        return False
 
     async def stop(self):
         """停止统一代理服务器"""

@@ -43,7 +43,8 @@ class BaseCommand(ABC):
         self.enabled = True
         self.group_only = False
         self.private_only = False
-        
+        self.always_allow = False  # 是否始终允许执行（绕过密钥鉴权检查）
+
         # 参数解析器
         self.parser = None
         self._setup_parser()
