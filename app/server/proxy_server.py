@@ -154,7 +154,7 @@ class ProxyServer:
     async def _handle_client_connection(self, client_ws, path, connection_id: str, config: Dict[str, Any]):
         """处理客户端连接"""
         client_ip = client_ws.remote_address
-        self.logger.ws.info(f"[{connection_id}] 新的客户端连接: {client_ip}")
+        # self.logger.ws.info(f"[{connection_id}] 新的客户端连接: {client_ip}")
         
         try:
             # 创建代理连接对象
@@ -225,11 +225,17 @@ class ProxyConnection:
         self.backup_manager = backup_manager
 
         self.target_connections = []
+        self.target_sakoya_flags = []  # 标记每个目标是否使用早柚协议
         self.echo_cache = {}
         self.running = False
         self.client_headers = None
         self.first_message = None
         self.self_id: int | None = None
+
+        # 解析目标端点配置，标记哪些使用早柚协议
+        for endpoint in self.config.get("target_endpoints", []):
+            is_sakoya = isinstance(endpoint, dict) and endpoint.get("sakoya_protocol", False)
+            self.target_sakoya_flags.append(is_sakoya)
 
         self.reconnect_locks = []  # 每个 target_index 一个 Lock
         for _ in self.config.get("target_endpoints", []):
@@ -379,10 +385,46 @@ class ProxyConnection:
         """连接到目标端点"""
         target_endpoints = self.config.get("target_endpoints", [])
 
+        # self.logger.ws.info(f"[{self.connection_id}] 开始连接到 {len(target_endpoints)} 个目标端点")
+
         # 先标记哪些目标需要启动重连（避免在循环中启动任务）
         failed_targets = []
         for idx, endpoint in enumerate(target_endpoints):
-            target_ws = await self._connect_to_target(endpoint, self.list_index2target_index(idx))
+            # 兼容字符串格式和对象格式
+            endpoint_url = endpoint if isinstance(endpoint, str) else endpoint.get("url", "")
+            is_sakoya = isinstance(endpoint, dict) and endpoint.get("sakoya_protocol", False)
+
+            # self.logger.ws.info(
+            #     f"[{self.connection_id}] 连接目标 {self.list_index2target_index(idx)}: "
+            #     f"{endpoint_url} (Sakoya: {is_sakoya})"
+            # )
+
+            target_ws = await self._connect_to_target(endpoint_url, self.list_index2target_index(idx))
+
+            # 如果连接成功，检查是否需要应用早柚协议适配器
+            if target_ws:
+                if is_sakoya:
+                    from .sakoya_adapter import SakoyaWebSocketAdapter, extract_bot_id_from_path
+                    # 从目标 URL 中提取 bot_id
+                    bot_id = "Bot"  # 默认 bot_id
+                    try:
+                        from urllib.parse import urlparse
+                        parsed = urlparse(endpoint_url)
+                        bot_id = extract_bot_id_from_path(parsed.path)
+                        if not bot_id:
+                            self.logger.ws.warning(f"[{self.connection_id}] 无法从路径 {parsed.path} 提取 bot_id，使用默认值 'Bot'")
+                            bot_id = "Bot"
+                    except Exception as e:
+                        self.logger.ws.error(f"[{self.connection_id}] 提取 bot_id 失败: {e}，使用默认值 'Bot'")
+                        bot_id = "Bot"
+
+                    target_ws = SakoyaWebSocketAdapter(target_ws, bot_id, self.logger)
+                    # 更新连接列表中的引用为包装后的适配器
+                    self.target_connections[idx] = target_ws
+                else:
+                    # self.logger.ws.info(f"[{self.connection_id}] 目标 {self.list_index2target_index(idx)} 使用标准 OneBot v11 协议")
+                    pass
+
             # 如果连接失败（返回 None），记录下来稍后启动重连
             if target_ws is None:
                 failed_targets.append(self.list_index2target_index(idx))
@@ -406,14 +448,20 @@ class ProxyConnection:
     async def _forward_target_to_client(self, target_ws, target_index):
         """转发目标消息到客户端"""
         try:
+            self.logger.ws.debug(f"[{self.connection_id}] 目标 {target_index} 开始接收消息循环...")
             async for message in target_ws:
+                self.logger.ws.debug(f"[{self.connection_id}] 目标 {target_index} 收到消息")
                 await self._process_target_message(message, target_index)
-        except websockets.exceptions.ConnectionClosed:
+        except websockets.exceptions.ConnectionClosed as e:
+            self.logger.ws.warning(f"[{self.connection_id}] 目标 {target_index} 连接被服务器关闭: {e}")
             await self._reconnect_target(target_index)
         except TypeError as e:
+            self.logger.ws.error(f"[{self.connection_id}] 目标 {target_index} TypeError (ws is None): {e}")
             await self._reconnect_target(target_index) # 如果是None，也挂一个后台重连
         except Exception as e:
             self.logger.ws.error(f"[{self.connection_id}] 目标消息转发错误 {target_index}: {e}")
+            import traceback
+            self.logger.ws.error(f"[{self.connection_id}] 错误堆栈: {traceback.format_exc()}")
 
     async def _start_reconnect_with_delay(self, target_index: int):
         """延迟启动重连任务，等待客户端完全初始化"""
@@ -426,6 +474,17 @@ class ProxyConnection:
         lock = self.reconnect_locks[self.target_index2list_index(target_index)]
         if not lock.locked():
             async with lock:
+                # 获取端点配置
+                target_endpoints = self.config.get("target_endpoints", [])
+                endpoint = target_endpoints[self.target_index2list_index(target_index)] if self.target_index2list_index(target_index) < len(target_endpoints) else None
+
+                is_sakoya = endpoint and isinstance(endpoint, dict) and endpoint.get("sakoya_protocol", False)
+                endpoint_url = endpoint if isinstance(endpoint, str) else endpoint.get("url", "") if endpoint else ""
+
+                self.logger.ws.info(
+                    f"[{self.connection_id}] 重连配置: endpoint={endpoint_url}, sakoya={is_sakoya}"
+                )
+
                 for _ in range(40):
                     # 检查客户端连接是否还活着 - 使用 state 属性
                     client_state = getattr(self.client_ws, 'state', None)
@@ -435,13 +494,40 @@ class ProxyConnection:
 
                     await asyncio.sleep(3)
                     try:
-                        target_ws = await self._connect_to_target(self.config.get("target_endpoints", [])[self.target_index2list_index(target_index)], target_index)
+                        self.logger.ws.debug(f"[{self.connection_id}] 尝试重连目标 {target_index}...")
+                        target_ws = await self._connect_to_target(endpoint_url, target_index)
                         if target_ws is None:
+                            self.logger.ws.debug(f"[{self.connection_id}] 重连目标 {target_index} 失败，3秒后重试")
                             continue
+
+                        # 检查是否需要应用早柚协议适配器
+                        if is_sakoya:
+                            from .sakoya_adapter import SakoyaWebSocketAdapter, extract_bot_id_from_path
+                            bot_id = "Bot"  # 默认 bot_id
+                            try:
+                                from urllib.parse import urlparse
+                                parsed = urlparse(endpoint_url)
+                                bot_id = extract_bot_id_from_path(parsed.path)
+                                if not bot_id:
+                                    bot_id = "Bot"
+                            except Exception:
+                                bot_id = "Bot"
+                            target_ws = SakoyaWebSocketAdapter(target_ws, bot_id, self.logger)
+
+                        # 更新目标连接列表
+                        list_index = self.target_index2list_index(target_index)
+                        self.target_connections[list_index] = target_ws
+
                         await self._process_client_message(self.first_message) # 比如yunzai需要使用first Message重新注册
-                        self.logger.ws.info(f"[{self.connection_id}] 目标连接 {target_index} 恢复成功，5秒后重新开始转发。")
-                        await asyncio.sleep(5)
-                        await self._forward_target_to_client(target_ws, target_index)
+
+                        # 早柚协议连接立即开始转发，不等待5秒
+                        if is_sakoya:
+                            self.logger.ws.info(f"[{self.connection_id}] 目标连接 {target_index} 恢复成功，立即开始转发。")
+                            await self._forward_target_to_client(target_ws, target_index)
+                        else:
+                            self.logger.ws.info(f"[{self.connection_id}] 目标连接 {target_index} 恢复成功，5秒后重新开始转发。")
+                            await asyncio.sleep(5)
+                            await self._forward_target_to_client(target_ws, target_index)
                     except Exception as e:
                         self.logger.ws.warning(f"[{self.connection_id}] 尝试重连目标 {target_index} 失败: {e}")
 
@@ -454,12 +540,36 @@ class ProxyConnection:
 
                     await asyncio.sleep(600) # 10分钟后再试
                     try:
-                        target_ws = await self._connect_to_target(self.config.get("target_endpoints", [])[self.target_index2list_index(target_index)], target_index)
+                        target_ws = await self._connect_to_target(endpoint_url, target_index)
                         if target_ws:
+                            # 检查是否需要应用早柚协议适配器
+                            if is_sakoya:
+                                from .sakoya_adapter import SakoyaWebSocketAdapter, extract_bot_id_from_path
+                                bot_id = "Bot"  # 默认 bot_id
+                                try:
+                                    from urllib.parse import urlparse
+                                    parsed = urlparse(endpoint_url)
+                                    bot_id = extract_bot_id_from_path(parsed.path)
+                                    if not bot_id:
+                                        bot_id = "Bot"
+                                except Exception:
+                                    bot_id = "Bot"
+                                target_ws = SakoyaWebSocketAdapter(target_ws, bot_id, self.logger)
+
+                            # 更新目标连接列表
+                            list_index = self.target_index2list_index(target_index)
+                            self.target_connections[list_index] = target_ws
+
                             await self._process_client_message(self.first_message)
-                            self.logger.ws.info(f"[{self.connection_id}] 目标连接 {target_index} 恢复成功，5秒后重新开始转发。")
-                            await asyncio.sleep(5)
-                            await self._forward_target_to_client(target_ws, target_index)
+
+                            # 早柚协议连接立即开始转发，不等待5秒
+                            if is_sakoya:
+                                self.logger.ws.info(f"[{self.connection_id}] 目标连接 {target_index} 恢复成功，立即开始转发。")
+                                await self._forward_target_to_client(target_ws, target_index)
+                            else:
+                                self.logger.ws.info(f"[{self.connection_id}] 目标连接 {target_index} 恢复成功，5秒后重新开始转发。")
+                                await asyncio.sleep(5)
+                                await self._forward_target_to_client(target_ws, target_index)
                     except Exception as e:
                         pass
 
@@ -475,11 +585,11 @@ class ProxyConnection:
                     # 但是，不论是通过头注册还是yunzai的方式都不能支持账号的热切换
                     self.logger.ws.warning("[{}] 客户端账号已切换到 {}，请重启该连接！".format(self.connection_id, message_data['self_id']))
                 self.self_id = message_data["self_id"]
-            
+
             # 消息预处理
             message_data = await self.command_handler.preprocesser(message_data)
             processed_message, parsed_event = await self._preprocess_message(message_data)
-            
+
             if processed_message:
                 if self._check_api_call_succ(parsed_event):
                     # 如果是发送成功
@@ -496,13 +606,13 @@ class ProxyConnection:
                     await self.database_manager.save_message(
                         processed_message, "RECV", self.connection_id
                     )
-                
+
                 # 本体指令集
                 resp_api = await self.command_handler.handle_message(parsed_event)
                 if resp_api:
                     processed_message = None # 自身返回时，阻止事件传递给框架 Preprocesser不受影响
                     await self._process_target_message(resp_api, 0) # 自身的index为0，其实并不是连接
-            
+
                 # 转发到所有目标
                 processed_json = json.dumps(processed_message, ensure_ascii=False)
 
@@ -527,8 +637,32 @@ class ProxyConnection:
                             self.logger.ws.error(f"[{self.connection_id}] 发送到目标失败: {e}")
                             raise
                 else:
-                    for target_index, target_ws in enumerate(self.target_connections):
+                    # 检查是否是需要跳过早柚协议端点的消息类型
+                    action = message_data.get("action", "")
+                    post_type = message_data.get("post_type", "")
+
+                    # Sakoya 后端只需要 API 调用和消息事件
+                    # 跳过：元事件（heartbeat、lifecycle等）
+                    skip_sakoya = (
+                        action in ['lifecycle', '_connect', 'get_login_info', 'get_status', 'get_version_info'] or
+                        post_type == 'meta_event'  # 只跳过元事件，保留消息事件
+                    )
+
+                    if skip_sakoya:
+                        self.logger.ws.debug(f"[{self.connection_id}] 消息类型 post_type={post_type}, action={action} 将跳过 Sakoya 端点")
+
+                    for list_index, target_ws in enumerate(self.target_connections):
                         if target_ws:
+                            # 检查是否是早柚协议端点，如果是且消息类型需要跳过
+                            is_sakoya = list_index < len(self.target_sakoya_flags) and self.target_sakoya_flags[list_index]
+
+                            if is_sakoya and skip_sakoya:
+                                self.logger.ws.debug(
+                                    f"[{self.connection_id}] 跳过向早柚协议端点 {self.list_index2target_index(list_index)} "
+                                    f"发送消息 (post_type={post_type}, action={action})"
+                                )
+                                continue
+
                             try:
                                 await target_ws.send(processed_json)
                             except websockets.exceptions.ConnectionClosed:
@@ -536,7 +670,7 @@ class ProxyConnection:
                             except Exception as e:
                                 self.logger.ws.error(f"[{self.connection_id}] 发送到目标失败: {e}")
                                 raise
-            
+
         except json.JSONDecodeError:
             self.logger.ws.warning(f"[{self.connection_id}] 收到非JSON消息: {message[:1000]}")
         except websockets.exceptions.ConnectionClosed:
@@ -552,30 +686,49 @@ class ProxyConnection:
                 message_data = json.loads(message)
             else:
                 message_data = message
-            
+
             self.logger.ws.debug(f"[{self.connection_id}] 来自连接 {target_index} 的API响应: {str(message_data)[:1000]}")
-            
+
             if not self._construct_echo_info(message_data, target_index):
                 # 兼容不使用echo回报的框架，不清楚有没有
                 message_data_as_recv = await self._construct_data_as_msg(message_data)
                 await self.database_manager.save_message(
                     message_data_as_recv, "SEND", self.connection_id
                 )
-            
+
             # 消息后处理
+            self.logger.ws.debug(f"[{self.connection_id}] 开始消息后处理，目标 {target_index}")
             processed_message = await self._postprocess_message(message_data, str(self.self_id))
-            
+            self.logger.ws.debug(f"[{self.connection_id}] 消息后处理完成，目标 {target_index}，结果: {processed_message is not None}")
+
             if processed_message:
                 # 发送到客户端
                 processed_json = json.dumps(processed_message, ensure_ascii=False)
-                await self.client_ws.send(processed_json)
-            
-        except json.JSONDecodeError:
-            self.logger.ws.warning(f"[{self.connection_id}] 目标 {target_index} 发送非JSON消息: {message[:1000]}")
+                self.logger.ws.debug(f"[{self.connection_id}] 准备发送到客户端，消息长度: {len(processed_json)}")
+                try:
+                    await self.client_ws.send(processed_json)
+                    self.logger.ws.debug(f"[{self.connection_id}] 成功发送到客户端")
+                except websockets.exceptions.ConnectionClosed as e:
+                    # 客户端连接已关闭，记录日志并重新抛出以终止连接
+                    self.logger.ws.warning(f"[{self.connection_id}] 发送到客户端失败，客户端连接已关闭: code={e.code}, reason={e.reason}")
+                    raise
+                except Exception as e:
+                    # 其他发送错误，记录日志但不中断连接
+                    self.logger.ws.error(f"[{self.connection_id}] 发送到客户端失败: {e}")
+                    import traceback
+                    self.logger.ws.error(f"[{self.connection_id}] 错误堆栈: {traceback.format_exc()}")
+                    # 不抛出异常，继续处理其他消息
+            else:
+                self.logger.ws.debug(f"[{self.connection_id}] 消息后处理返回 None，不发送到客户端")
+
+        except json.JSONDecodeError as e:
+            self.logger.ws.warning(f"[{self.connection_id}] 目标 {target_index} 发送非JSON消息: {message[:1000]}, 错误: {e}")
         except websockets.exceptions.ConnectionClosed:
             raise
         except Exception as e:
-            self.logger.ws.error(f"[{self.connection_id}] 处理目标消息 {message} 失败: {e}")
+            self.logger.ws.error(f"[{self.connection_id}] 处理目标消息失败: {e}")
+            import traceback
+            self.logger.ws.error(f"[{self.connection_id}] 错误堆栈: {traceback.format_exc()}")
     
     async def _preprocess_message(self, message_data: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Optional[Event]]:
         """消息预处理"""

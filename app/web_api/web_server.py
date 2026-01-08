@@ -438,24 +438,15 @@ class WebServer:
                     self.config_manager.save_connection_config(connection_id, config)
                 )
 
-                # 如果enabled状态发生变化，立即生效
+                # 如果enabled状态发生变化，热重载路由配置
                 if old_enabled != new_enabled:
-                    if new_enabled:
-                        # 启用连接：启动新的连接代理
-                        self.logger.web.info(f"启用连接 {connection_id}，正在启动连接代理...")
-                        # asyncio.create_task(
-                        #     self.proxy_server._start_connection_proxy(connection_id, config)
-                        # )
-                        if self.loop:
-                            self.loop.call_soon_threadsafe(lambda: asyncio.create_task(
-                                self.proxy_server._start_connection_proxy(connection_id, config)
-                            ))
-                        else:
-                            asyncio.run(self.proxy_server._start_connection_proxy(connection_id, config))
+                    self.logger.web.info(f"连接 {connection_id} 启用状态已变更，正在重载路由...")
+                    if self.loop:
+                        self.loop.call_soon_threadsafe(
+                            lambda: asyncio.create_task(self.proxy_server.reload_routes())
+                        )
                     else:
-                        # 禁用连接：停止现有连接
-                        self.logger.web.info(f"禁用连接 {connection_id}，正在重启")
-                        asyncio.run(reboot())
+                        asyncio.run(self.proxy_server.reload_routes())
 
                 return jsonify({'success': True})
             except ValueError as e:
@@ -1190,6 +1181,16 @@ class WebServer:
                     )
                 finally:
                     loop.close()
+
+                # 删除后重载路由
+                self.logger.web.info(f"连接 {connection_id} 已删除，正在重载路由...")
+                if self.loop:
+                    self.loop.call_soon_threadsafe(
+                        lambda: asyncio.create_task(self.proxy_server.reload_routes())
+                    )
+                else:
+                    asyncio.run(self.proxy_server.reload_routes())
+
                 return jsonify({'success': True})
             except Exception as e:
                 return jsonify({'error': str(e)}), 500

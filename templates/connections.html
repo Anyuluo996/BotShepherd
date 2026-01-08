@@ -300,37 +300,51 @@ function editConnection(connectionId) {
     document.getElementById('connectionDescription').value = connection.description || '';
     document.getElementById('clientEndpoint').value = connection.client_endpoint;
     document.getElementById('connectionEnabled').checked = connection.enabled;
-    
+
     // 填充目标端点
     const targetList = document.getElementById('targetEndpointsList');
     targetList.innerHTML = '';
-    
+
     connection.target_endpoints.forEach(endpoint => {
-        const div = document.createElement('div');
-        div.className = 'input-group mb-2';
-        div.innerHTML = `
-            <input type="text" class="form-control target-endpoint" value="${endpoint}">
-            <button class="btn btn-outline-danger" type="button" onclick="removeTargetEndpoint(this)">
-                <i class="bi bi-trash"></i>
-            </button>
-        `;
-        targetList.appendChild(div);
+        // 兼容字符串格式和对象格式
+        let url = '';
+        let sakoyaProtocol = false;
+
+        if (typeof endpoint === 'string') {
+            url = endpoint;
+            sakoyaProtocol = false;
+        } else if (typeof endpoint === 'object') {
+            url = endpoint.url || '';
+            sakoyaProtocol = endpoint.sakoya_protocol || false;
+        }
+
+        addTargetEndpoint(url, sakoyaProtocol);
     });
-    
+
     new bootstrap.Modal(document.getElementById('connectionModal')).show();
 }
 
 // 添加目标端点
-function addTargetEndpoint() {
+function addTargetEndpoint(url = '', sakoyaProtocol = false) {
     const targetList = document.getElementById('targetEndpointsList');
     const div = document.createElement('div');
-    div.className = 'input-group mb-2';
+    div.className = 'mb-2 p-3 border rounded position-relative';
     div.innerHTML = `
-        <input type="text" class="form-control target-endpoint" 
-               placeholder="ws://localhost:2536/OneBotv11">
-        <button class="btn btn-outline-danger" type="button" onclick="removeTargetEndpoint(this)">
-            <i class="bi bi-trash"></i>
-        </button>
+        <div class="d-flex justify-content-between align-items-center mb-2">
+            <label class="form-label mb-0">目标端点</label>
+            <button class="btn btn-sm btn-outline-danger" type="button" onclick="removeTargetEndpoint(this)">
+                <i class="bi bi-trash"></i>
+            </button>
+        </div>
+        <input type="text" class="form-control mb-2 target-endpoint-url"
+               placeholder="ws://localhost:2536/OneBotv11" value="${url}">
+        <div class="form-check">
+            <input class="form-check-input target-endpoint-sakoya" type="checkbox" ${sakoyaProtocol ? 'checked' : ''}>
+            <label class="form-check-label">
+                早柚协议 <span class="badge bg-info">Sakoya</span>
+            </label>
+            <div class="form-text">启用后将自动转换早柚协议和 OneBot v11 协议</div>
+        </div>
     `;
     targetList.appendChild(div);
 }
@@ -354,12 +368,19 @@ async function saveConnection() {
         const clientEndpoint = document.getElementById('clientEndpoint').value.trim();
         const enabled = document.getElementById('connectionEnabled').checked;
 
-        // 收集目标端点
+        // 收集目标端点（支持对象格式）
         const targetEndpoints = [];
-        document.querySelectorAll('.target-endpoint').forEach(input => {
-            const value = input.value.trim();
-            if (value) {
-                targetEndpoints.push(value);
+        document.querySelectorAll('#targetEndpointsList > div').forEach(div => {
+            const urlInput = div.querySelector('.target-endpoint-url');
+            const sakoyaCheckbox = div.querySelector('.target-endpoint-sakoya');
+            if (urlInput) {
+                const url = urlInput.value.trim();
+                if (url) {
+                    targetEndpoints.push({
+                        url: url,
+                        sakoya_protocol: sakoyaCheckbox ? sakoyaCheckbox.checked : false
+                    });
+                }
             }
         });
 
@@ -474,7 +495,14 @@ function showConnectionDetail(connectionId) {
                 <h6>端点信息</h6>
                 <table class="table table-sm">
                     <tr><td>客户端端点</td><td><code>${connection.client_endpoint}</code></td></tr>
-                    <tr><td>目标端点</td><td>${connection.target_endpoints.map(ep => `<code>${ep}</code>`).join('<br>')}</td></tr>
+                    <tr><td>目标端点</td><td>
+                        ${connection.target_endpoints.map(ep => {
+                            const url = typeof ep === 'string' ? ep : ep.url;
+                            const isSakoya = typeof ep === 'object' && ep.sakoya_protocol;
+                            const badge = isSakoya ? ' <span class="badge bg-info">Sakoya</span>' : '';
+                            return `<code>${url}</code>${badge}`;
+                        }).join('<br>')}
+                    </td></tr>
                 </table>
             </div>
         </div>

@@ -69,24 +69,24 @@ class MessageProcessor:
     
     async def postprocess_target_message(self, message_data: Dict[str, Any], self_id: str) -> Optional[Dict[str, Any]]:
         """后处理目标消息"""
-        try:            
+        try:
             # 记录原始消息
             self._log_message(message_data, "SEND", "RAW", "debug")
-            
+
             # 解析事件
             event = self.event_parser.parse_event_data(message_data)
             if event:
                 if isinstance(event, ApiRequest) and "send" in event.action:
-                
+
                     # 消息事件特殊处理
                     processed_data = await self._postprocess_message_event(event, self_id, message_data)
                     if not processed_data:
                         return None
                     message_data = processed_data
-                    
+
                     # 记录处理后的消息
                     self._log_message(message_data, "SEND", "PROCESSED")
-            
+
             return message_data
             
         except Exception as e:

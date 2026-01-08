@@ -137,7 +137,7 @@ class ConfigValidator:
     def validate_connection_config(config: Dict[str, Any]) -> tuple[bool, List[str]]:
         """验证连接配置"""
         errors = []
-        
+
         # 验证必需字段
         required_fields = {
             "name": str,
@@ -146,13 +146,13 @@ class ConfigValidator:
             "target_endpoints": list,
             "enabled": bool
         }
-        
+
         for field, expected_type in required_fields.items():
             if field not in config:
                 errors.append(f"缺少必需字段: {field}")
             elif not isinstance(config[field], expected_type):
                 errors.append(f"字段 {field} 类型错误，期望 {expected_type.__name__}")
-        
+
         # 验证名称和描述
         if "name" in config:
             name = config["name"]
@@ -160,14 +160,14 @@ class ConfigValidator:
                 errors.append("name 不能为空")
             elif len(name) > 50:
                 errors.append("name 长度不能超过50个字符")
-        
+
         # 验证客户端端点
         if "client_endpoint" in config:
             endpoint = config["client_endpoint"]
             if not ConfigValidator._validate_websocket_url(endpoint):
                 errors.append(f"client_endpoint 格式无效: {endpoint}")
-        
-        # 验证目标端点
+
+        # 验证目标端点（支持字符串或对象格式）
         if "target_endpoints" in config:
             endpoints = config["target_endpoints"]
             if isinstance(endpoints, list):
@@ -175,11 +175,21 @@ class ConfigValidator:
                     errors.append("target_endpoints 不能为空")
                 else:
                     for i, endpoint in enumerate(endpoints):
-                        if not isinstance(endpoint, str):
-                            errors.append(f"target_endpoints[{i}] 必须是字符串")
-                        elif not ConfigValidator._validate_websocket_url(endpoint):
-                            errors.append(f"target_endpoints[{i}] 格式无效: {endpoint}")
-        
+                        # 字符串格式（向后兼容）
+                        if isinstance(endpoint, str):
+                            if not ConfigValidator._validate_websocket_url(endpoint):
+                                errors.append(f"target_endpoints[{i}] 格式无效: {endpoint}")
+                        # 对象格式 {url: "...", sakoya_protocol: bool}
+                        elif isinstance(endpoint, dict):
+                            if "url" not in endpoint:
+                                errors.append(f"target_endpoints[{i}] 缺少 url 字段")
+                            elif not ConfigValidator._validate_websocket_url(endpoint["url"]):
+                                errors.append(f"target_endpoints[{i}] url 格式无效: {endpoint['url']}")
+                            if "sakoya_protocol" in endpoint and not isinstance(endpoint["sakoya_protocol"], bool):
+                                errors.append(f"target_endpoints[{i}] sakoya_protocol 必须是布尔值")
+                        else:
+                            errors.append(f"target_endpoints[{i}] 必须是字符串或对象")
+
         return len(errors) == 0, errors
     
     @staticmethod
@@ -382,7 +392,7 @@ class ConfigTemplate:
             "description": "连接描述",
             "client_endpoint": "ws://localhost:2537/OneBotv11",
             "target_endpoints": [
-                "ws://localhost:2536/OneBotv11"
+                {"url": "ws://localhost:2536/OneBotv11", "sakoya_protocol": False}
             ],
             "enabled": True
         }

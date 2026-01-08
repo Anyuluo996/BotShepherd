@@ -9,3 +9,15 @@ devnote.md
 venv
 *.zip
 !data/test.png
+docs
+docker-entrypoint.sh
+DOCKER.md
+.python-version
+.dockerignore
+*.txt
+nul
+=3.9.0
+Dockerfile.bs
+docker-compose.yml
+botshepherd.egg-info
+.gitignore

@@ -3,7 +3,7 @@
 BotShepherd
 一个OneBot v11协议WebSocket代理和管理系统
 
-主程序入口文件
+主程序入口文件 - 用于 uv run bs 命令
 """
 
 import asyncio
@@ -16,7 +16,7 @@ import venv
 from pathlib import Path
 
 # 添加项目根目录到Python路径
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # 导入依赖安装工具（这个不依赖其他模块）
 from app.utils.dependency_installer import try_import_with_install
@@ -35,14 +35,10 @@ def import_app_modules():
 # 尝试导入模块，失败时自动安装依赖
 success, import_err = try_import_with_install(import_app_modules)
 if not success and import_err:
-    print("请先运行初始化命令: python main.py --setup")
+    print("请先运行初始化命令: uv run bs --setup")
     print("如已指定 --setup 请忽略")
-    if sys.platform == "win32":
-        print("如已经完成初始化，请使用 ./venv/Scripts/python.exe main.py")
-    else:
-        print("如已经完成初始化，请使用 ./venv/bin/python main.py")
     sys.exit(1)
-    
+
 import_app_modules()
 
 class BotShepherd:
@@ -59,7 +55,7 @@ class BotShepherd:
         self.shutdown_event = None
         self._shutdown_in_progress = False
         self._backup_task = None
-        
+
     async def initialize(self):
         """初始化系统组件"""
         try:
@@ -315,63 +311,6 @@ def check_python_version():
     print(f"✅ Python版本检查通过: {sys.version}")
     return True
 
-def create_venv_and_install():
-    """创建虚拟环境并安装依赖"""
-    if not import_err:
-        print("✅ 环境已符合要求！无需安装虚拟环境！")
-        return True
-    
-    venv_path = Path("./venv")
-
-    if not venv_path.exists():
-        print("📦 创建虚拟环境...")
-        try:
-            import venv
-            venv.create(venv_path, with_pip=True)
-            print("✅ 虚拟环境创建完成")
-        except Exception as e:
-            print(f"❌ 创建虚拟环境失败: {e}")
-            return False
-    else:
-        print("✅ 虚拟环境已存在")
-
-    # 确定pip路径
-    if sys.platform == "win32":
-        venv_python = venv_path / "Scripts" / "python.exe"
-        pip_path = venv_path / "Scripts" / "pip.exe"
-    else:
-        venv_python = venv_path / "bin" / "python"
-        pip_path = venv_path / "bin" / "pip"
-
-    # 检查pip是否存在，如果不存在则安装
-    if not pip_path.exists():
-        print("📥 pip不存在，正在安装pip...")
-        try:
-            # 使用ensurepip安装pip到虚拟环境
-            subprocess.check_call([str(venv_python), "-m", "ensurepip", "--upgrade"])
-            print("✅ pip安装完成")
-        except subprocess.CalledProcessError as e:
-            print(f"❌ ensurepip安装pip失败: {e}")
-            return False
-        
-    # 安装依赖
-    requirements_file = Path("requirements.txt")
-    if requirements_file.exists():
-        print("📥 安装项目依赖...")
-        try:
-            subprocess.check_call([str(pip_path), "install", "-r", str(requirements_file)])
-            print("✅ 依赖安装完成")
-            print("准备重启以切换到虚拟环境！")
-            os.execv(venv_python, [venv_python] + sys.argv)
-            return True
-        except subprocess.CalledProcessError as e:
-            print(f"❌ 安装依赖失败: {e}")
-            return False
-    else:
-        print("❌ requirements.txt 文件不存在")
-        return False
-    
-
 def create_directories():
     """创建必要的目录"""
     print("📁 创建项目目录...")
@@ -401,14 +340,12 @@ async def setup_initial_config():
     if not check_python_version():
         sys.exit(1)
 
-    # 创建虚拟环境并安装依赖
-    if not create_venv_and_install():
-        print("\n❌ 环境设置失败，请检查错误信息")
-        sys.exit(1)
+    # 使用uv时，依赖已通过pyproject.toml管理，无需手动安装
+    print("✅ 使用uv管理依赖")
 
     # 创建目录
     create_directories()
-    
+
     # 导入应用模块
     import_app_modules()
 
@@ -435,13 +372,7 @@ async def setup_initial_config():
         print("1. 编辑配置文件（或直接使用webui编辑）:")
         print("   - config/global_config.json (全局配置)")
         print("\n2. 启动系统:")
-        if Path("./venv").exists():
-            if sys.platform == "win32":
-                print("   .\\venv\\Scripts\\python.exe main.py")
-            else:
-                print("   ./venv/bin/python main.py")
-        else:
-            print("   python main.py")
+        print("   uv run bs")
         print("\n3. 访问Web管理界面:")
         print("   http://localhost:5111（默认）")
         print("   默认用户名/密码: admin/admin")
@@ -460,7 +391,7 @@ def check_config_exists():
 
 # 全局应用实例
 app_instance = None
-    
+
 async def main():
     """主函数"""
     parser = argparse.ArgumentParser(description='BotShepherd - 星星花与牧羊人')
@@ -475,7 +406,7 @@ async def main():
     # 检查配置文件是否存在
     if not check_config_exists():
         print("❌ 错误: 配置文件不存在")
-        print("请先运行初始化命令: python main.py --setup")
+        print("请先运行初始化命令: uv run bs --setup")
         sys.exit(1)
 
     # 创建并启动BotShepherd
@@ -491,7 +422,8 @@ async def main():
     finally:
         await app_instance.stop()
 
-if __name__ == "__main__":
+def _cli_entrypoint():
+    """CLI 入口点 - 同步函数供 uv 调用"""
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
@@ -499,3 +431,6 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"启动失败: {e}")
         sys.exit(1)
+
+if __name__ == "__main__":
+    _cli_entrypoint()
