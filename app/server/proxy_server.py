@@ -231,15 +231,21 @@ class ProxyConnection:
         self.client_headers = None
         self.first_message = None
         self.self_id: int | None = None
+        self.reloading = False  # 标记是否正在重新加载目标端点
 
-        # 解析目标端点配置，标记哪些使用早柚协议
+        # 解析目标端点配置，标记哪些使用早柚协议，哪些被禁用
         for endpoint in self.config.get("target_endpoints", []):
             is_sakoya = isinstance(endpoint, dict) and endpoint.get("sakoya_protocol", False)
             self.target_sakoya_flags.append(is_sakoya)
 
         self.reconnect_locks = []  # 每个 target_index 一个 Lock
-        for _ in self.config.get("target_endpoints", []):
-            self.reconnect_locks.append(asyncio.Lock())
+        for endpoint in self.config.get("target_endpoints", []):
+            # 检查端点是否被禁用
+            is_disabled = isinstance(endpoint, dict) and endpoint.get("disabled", False)
+            if not is_disabled:
+                self.reconnect_locks.append(asyncio.Lock())
+            else:
+                self.reconnect_locks.append(None)  # 禁用的端点不需要锁
 
         # 初始化消息处理器
         self.message_processor = MessageProcessor(config_manager, database_manager, logger)
@@ -285,31 +291,32 @@ class ProxyConnection:
             tasks = []
 
             # 客户端到目标的转发任务
-            tasks.append(asyncio.create_task(self._forward_client_to_targets()))
+            client_to_targets_task = asyncio.create_task(self._forward_client_to_targets())
+            tasks.append(client_to_targets_task)
 
             # 目标到客户端的转发任务
+            target_tasks = []
             for idx, target_ws in enumerate(self.target_connections):
                 if target_ws:
-                    tasks.append(asyncio.create_task(
+                    task = asyncio.create_task(
                         self._forward_target_to_client(target_ws, self.list_index2target_index(idx))
-                    ))
+                    )
+                    target_tasks.append(task)
+                    tasks.append(task)
 
             if tasks:
-                # 等待任务，当任意任务结束时（如客户端断开）立即取消其他任务
-                done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+                # 只等待客户端转发任务，让它作为主要任务
+                # 目标端点的转发任务会独立运行，互不干扰
+                await client_to_targets_task
 
-                # 取消所有未完成的任务
-                for task in pending:
-                    task.cancel()
+                # 客户端断开后，取消所有目标转发任务
+                for task in target_tasks:
+                    if not task.done():
+                        task.cancel()
 
-                # 等待所有任务真正结束
-                if pending:
-                    await asyncio.wait(pending, timeout=3.0)
-
-                # 检查是否是客户端断开导致的
-                for task in done:
-                    if task.exception():
-                        self.logger.ws.info(f"[{self.connection_id}] 任务异常退出: {task.exception()}")
+                # 等待所有目标任务结束
+                if target_tasks:
+                    await asyncio.gather(*target_tasks, return_exceptions=True)
             else:
                 self.logger.ws.warning(f"[{self.connection_id}] 没有转发任务，连接将关闭")
             
@@ -410,6 +417,17 @@ class ProxyConnection:
         # 先标记哪些目标需要启动重连（避免在循环中启动任务）
         failed_targets = []
         for idx, endpoint in enumerate(target_endpoints):
+            # 检查端点是否被禁用
+            is_disabled = isinstance(endpoint, dict) and endpoint.get("disabled", False)
+            if is_disabled:
+                self.logger.ws.info(f"[{self.connection_id}] 目标端点 {self.list_index2target_index(idx)} 已被禁用，跳过连接")
+                # 在 target_connections 中添加占位符，保持索引一致
+                if idx >= len(self.target_connections):
+                    self.target_connections.append(None)
+                else:
+                    self.target_connections[idx] = None
+                continue
+
             # 兼容字符串格式和对象格式
             endpoint_url = endpoint if isinstance(endpoint, str) else endpoint.get("url", "")
             is_sakoya = isinstance(endpoint, dict) and endpoint.get("sakoya_protocol", False)
@@ -419,7 +437,7 @@ class ProxyConnection:
             # 如果连接成功，检查是否需要应用早柚协议适配器
             if target_ws:
                 if is_sakoya:
-                    from .sakoya_adapter import gscoreWebSocketAdapter, extract_bot_id_from_path
+                    from .sakoya_adapter import GscoreWebSocketAdapter, extract_bot_id_from_path
                     # 从目标 URL 中提取 bot_id
                     bot_id = "Bot"  # 默认 bot_id
                     try:
@@ -433,7 +451,7 @@ class ProxyConnection:
                         self.logger.ws.error(f"[{self.connection_id}] 提取 bot_id 失败: {e}，使用默认值 'Bot'")
                         bot_id = "Bot"
 
-                    target_ws = gscoreWebSocketAdapter(target_ws, bot_id, self.logger)
+                    target_ws = GscoreWebSocketAdapter(target_ws, bot_id, self.logger)
                     # 更新连接列表中的引用为包装后的适配器
                     self.target_connections[idx] = target_ws
                 else:
@@ -468,9 +486,17 @@ class ProxyConnection:
                 self.logger.ws.debug(f"[{self.connection_id}] 目标 {target_index} 收到消息")
                 await self._process_target_message(message, target_index)
         except websockets.exceptions.ConnectionClosed as e:
+            # 如果正在重新加载，不要尝试重连
+            if self.reloading:
+                self.logger.ws.info(f"[{self.connection_id}] 目标 {target_index} 连接已关闭（正在重新加载），不进行重连")
+                return
             self.logger.ws.warning(f"[{self.connection_id}] 目标 {target_index} 连接被服务器关闭: {e}")
             await self._reconnect_target(target_index)
         except TypeError as e:
+            # 如果正在重新加载，不要尝试重连
+            if self.reloading:
+                self.logger.ws.info(f"[{self.connection_id}] 目标 {target_index} 连接已关闭（正在重新加载），不进行重连")
+                return
             self.logger.ws.error(f"[{self.connection_id}] 目标 {target_index} TypeError (ws is None): {e}")
             await self._reconnect_target(target_index) # 如果是None，也挂一个后台重连
         except Exception as e:
@@ -486,109 +512,141 @@ class ProxyConnection:
     async def _reconnect_target(self, target_index: int):
         self.logger.ws.info(f"[{self.connection_id}] 目标连接 {target_index} 已关闭。将在120秒内持续尝试重新连接。")
 
-        lock = self.reconnect_locks[self.target_index2list_index(target_index)]
-        if not lock.locked():
-            async with lock:
-                # 获取端点配置
-                target_endpoints = self.config.get("target_endpoints", [])
-                endpoint = target_endpoints[self.target_index2list_index(target_index)] if self.target_index2list_index(target_index) < len(target_endpoints) else None
+        # 立即重连循环（40次，每3秒一次）
+        for attempt in range(40):
+            # 每次重连前都检查端点是否被禁用
+            target_endpoints = self.config.get("target_endpoints", [])
+            list_index = self.target_index2list_index(target_index)
+            if list_index >= len(target_endpoints):
+                self.logger.ws.warning(f"[{self.connection_id}] 目标 {target_index} 的索引超出范围，停止重连")
+                return
 
-                is_sakoya = endpoint and isinstance(endpoint, dict) and endpoint.get("sakoya_protocol", False)
-                endpoint_url = endpoint if isinstance(endpoint, str) else endpoint.get("url", "") if endpoint else ""
+            endpoint = target_endpoints[list_index]
+            is_disabled = isinstance(endpoint, dict) and endpoint.get("disabled", False)
+            if is_disabled:
+                self.logger.ws.info(f"[{self.connection_id}] 目标端点 {target_index} 已被禁用，停止重连")
+                return
 
-                self.logger.ws.info(
-                    f"[{self.connection_id}] 重连配置: endpoint={endpoint_url}, sakoya={is_sakoya}"
-                )
+            # 检查重连锁（如果锁是None说明端点被禁用了）
+            lock = self.reconnect_locks[list_index] if list_index < len(self.reconnect_locks) else None
+            if lock is None:
+                self.logger.ws.info(f"[{self.connection_id}] 目标端点 {target_index} 的重连锁为空（可能被禁用），停止重连")
+                return
 
-                for _ in range(40):
-                    # 检查客户端连接是否还活着 - 使用 state 属性
-                    client_state = getattr(self.client_ws, 'state', None)
-                    if not self.running or client_state != 1:  # 1 = OPEN 状态
-                        self.logger.ws.info(f"[{self.connection_id}] 客户端已断开 (running={self.running}, state={client_state})，停止重连目标 {target_index}")
-                        return
+            # 获取端点配置
+            endpoint = target_endpoints[list_index]
+            if not endpoint:
+                break
 
-                    await asyncio.sleep(3)
+            is_sakoya = endpoint and isinstance(endpoint, dict) and endpoint.get("sakoya_protocol", False)
+            endpoint_url = endpoint if isinstance(endpoint, str) else endpoint.get("url", "") if endpoint else ""
+
+            # 检查客户端连接是否还活着
+            client_state = getattr(self.client_ws, 'state', None)
+            if not self.running or client_state != 1:  # 1 = OPEN 状态
+                self.logger.ws.info(f"[{self.connection_id}] 客户端已断开 (running={self.running}, state={client_state})，停止重连目标 {target_index}")
+                return
+
+            await asyncio.sleep(3)
+            try:
+                self.logger.ws.debug(f"[{self.connection_id}] 尝试重连目标 {target_index} (第 {attempt + 1}/40 次)...")
+                target_ws = await self._connect_to_target(endpoint, target_index)
+                if target_ws is None:
+                    self.logger.ws.debug(f"[{self.connection_id}] 重连目标 {target_index} 失败，3秒后重试")
+                    continue
+
+                # 检查是否需要应用早柚协议适配器
+                if is_sakoya:
+                    from .sakoya_adapter import GscoreWebSocketAdapter, extract_bot_id_from_path
+                    bot_id = "Bot"  # 默认 bot_id
                     try:
-                        self.logger.ws.debug(f"[{self.connection_id}] 尝试重连目标 {target_index}...")
-                        target_ws = await self._connect_to_target(endpoint, target_index)
-                        if target_ws is None:
-                            self.logger.ws.debug(f"[{self.connection_id}] 重连目标 {target_index} 失败，3秒后重试")
-                            continue
+                        from urllib.parse import urlparse
+                        parsed = urlparse(endpoint_url)
+                        bot_id = extract_bot_id_from_path(parsed.path)
+                        if not bot_id:
+                            bot_id = "Bot"
+                    except Exception:
+                        bot_id = "Bot"
+                    target_ws = GscoreWebSocketAdapter(target_ws, bot_id, self.logger)
 
-                        # 检查是否需要应用早柚协议适配器
-                        if is_sakoya:
-                            from .sakoya_adapter import gscoreWebSocketAdapter, extract_bot_id_from_path
-                            bot_id = "Bot"  # 默认 bot_id
-                            try:
-                                from urllib.parse import urlparse
-                                parsed = urlparse(endpoint_url)
-                                bot_id = extract_bot_id_from_path(parsed.path)
-                                if not bot_id:
-                                    bot_id = "Bot"
-                            except Exception:
+                # 更新目标连接列表
+                self.target_connections[list_index] = target_ws
+
+                await self._process_client_message(self.first_message) # 比如yunzai需要使用first Message重新注册
+
+                # 早柚协议连接立即开始转发，不等待5秒
+                if is_sakoya:
+                    self.logger.ws.info(f"[{self.connection_id}] 目标连接 {target_index} 恢复成功，立即开始转发。")
+                    await self._forward_target_to_client(target_ws, target_index)
+                else:
+                    self.logger.ws.info(f"[{self.connection_id}] 目标连接 {target_index} 恢复成功，5秒后重新开始转发。")
+                    await asyncio.sleep(5)
+                    await self._forward_target_to_client(target_ws, target_index)
+                return  # 重连成功，退出重连函数
+            except Exception as e:
+                self.logger.ws.warning(f"[{self.connection_id}] 尝试重连目标 {target_index} 失败: {e}")
+
+        # 长期重连循环
+        while self.running:
+            # 每次重连前都检查端点是否被禁用
+            target_endpoints = self.config.get("target_endpoints", [])
+            list_index = self.target_index2list_index(target_index)
+            if list_index < len(target_endpoints):
+                endpoint = target_endpoints[list_index]
+                is_disabled = isinstance(endpoint, dict) and endpoint.get("disabled", False)
+                if is_disabled:
+                    self.logger.ws.info(f"[{self.connection_id}] 目标端点 {target_index} 已被禁用，停止长期重连")
+                    break
+
+            # 检查客户端状态
+            client_state = getattr(self.client_ws, 'state', None)
+            if client_state != 1:  # 1 = OPEN 状态
+                break
+
+            # 获取端点配置
+            endpoint = target_endpoints[list_index] if list_index < len(target_endpoints) else None
+            if not endpoint:
+                break
+
+            is_sakoya = endpoint and isinstance(endpoint, dict) and endpoint.get("sakoya_protocol", False)
+            endpoint_url = endpoint if isinstance(endpoint, str) else endpoint.get("url", "") if endpoint else ""
+
+            await asyncio.sleep(600) # 10分钟后再试
+            try:
+                target_ws = await self._connect_to_target(endpoint, target_index)
+                if target_ws:
+                    # 检查是否需要应用早柚协议适配器
+                    if is_sakoya:
+                        from .sakoya_adapter import GscoreWebSocketAdapter, extract_bot_id_from_path
+                        bot_id = "Bot"  # 默认 bot_id
+                        try:
+                            from urllib.parse import urlparse
+                            parsed = urlparse(endpoint_url)
+                            bot_id = extract_bot_id_from_path(parsed.path)
+                            if not bot_id:
                                 bot_id = "Bot"
-                            target_ws = gscoreWebSocketAdapter(target_ws, bot_id, self.logger)
+                        except Exception:
+                            bot_id = "Bot"
+                        target_ws = GscoreWebSocketAdapter(target_ws, bot_id, self.logger)
 
-                        # 更新目标连接列表
-                        list_index = self.target_index2list_index(target_index)
-                        self.target_connections[list_index] = target_ws
+                    # 更新目标连接列表
+                    self.target_connections[list_index] = target_ws
 
-                        await self._process_client_message(self.first_message) # 比如yunzai需要使用first Message重新注册
+                    await self._process_client_message(self.first_message)
 
-                        # 早柚协议连接立即开始转发，不等待5秒
-                        if is_sakoya:
-                            self.logger.ws.info(f"[{self.connection_id}] 目标连接 {target_index} 恢复成功，立即开始转发。")
-                            await self._forward_target_to_client(target_ws, target_index)
-                        else:
-                            self.logger.ws.info(f"[{self.connection_id}] 目标连接 {target_index} 恢复成功，5秒后重新开始转发。")
-                            await asyncio.sleep(5)
-                            await self._forward_target_to_client(target_ws, target_index)
-                    except Exception as e:
-                        self.logger.ws.warning(f"[{self.connection_id}] 尝试重连目标 {target_index} 失败: {e}")
+                    # 早柚协议连接立即开始转发，不等待5秒
+                    if is_sakoya:
+                        self.logger.ws.info(f"[{self.connection_id}] 目标连接 {target_index} 恢复成功，立即开始转发。")
+                        await self._forward_target_to_client(target_ws, target_index)
+                    else:
+                        self.logger.ws.info(f"[{self.connection_id}] 目标连接 {target_index} 恢复成功，5秒后重新开始转发。")
+                        await asyncio.sleep(5)
+                        await self._forward_target_to_client(target_ws, target_index)
+                    return  # 重连成功，退出重连函数
+            except Exception as e:
+                pass
 
-                # 长期重连循环
-                while self.running:
-                    # 检查客户端状态
-                    client_state = getattr(self.client_ws, 'state', None)
-                    if client_state != 1:  # 1 = OPEN 状态
-                        break
-
-                    await asyncio.sleep(600) # 10分钟后再试
-                    try:
-                        target_ws = await self._connect_to_target(endpoint, target_index)
-                        if target_ws:
-                            # 检查是否需要应用早柚协议适配器
-                            if is_sakoya:
-                                from .sakoya_adapter import gscoreWebSocketAdapter, extract_bot_id_from_path
-                                bot_id = "Bot"  # 默认 bot_id
-                                try:
-                                    from urllib.parse import urlparse
-                                    parsed = urlparse(endpoint_url)
-                                    bot_id = extract_bot_id_from_path(parsed.path)
-                                    if not bot_id:
-                                        bot_id = "Bot"
-                                except Exception:
-                                    bot_id = "Bot"
-                                target_ws = gscoreWebSocketAdapter(target_ws, bot_id, self.logger)
-
-                            # 更新目标连接列表
-                            list_index = self.target_index2list_index(target_index)
-                            self.target_connections[list_index] = target_ws
-
-                            await self._process_client_message(self.first_message)
-
-                            # 早柚协议连接立即开始转发，不等待5秒
-                            if is_sakoya:
-                                self.logger.ws.info(f"[{self.connection_id}] 目标连接 {target_index} 恢复成功，立即开始转发。")
-                                await self._forward_target_to_client(target_ws, target_index)
-                            else:
-                                self.logger.ws.info(f"[{self.connection_id}] 目标连接 {target_index} 恢复成功，5秒后重新开始转发。")
-                                await asyncio.sleep(5)
-                                await self._forward_target_to_client(target_ws, target_index)
-                    except Exception as e:
-                        pass
-
-                self.logger.ws.info(f"[{self.connection_id}] 客户端已断开，终止目标 {target_index} 的重连循环")
+        self.logger.ws.info(f"[{self.connection_id}] 客户端已断开，终止目标 {target_index} 的重连循环")
                         
     async def _process_client_message(self, message: str):
         """处理客户端消息"""
@@ -668,6 +726,15 @@ class ProxyConnection:
 
                     for list_index, target_ws in enumerate(self.target_connections):
                         if target_ws:
+                            # 检查端点是否被禁用
+                            target_index = self.list_index2target_index(list_index)
+                            target_endpoints = self.config.get("target_endpoints", [])
+                            if target_index - 1 < len(target_endpoints):
+                                endpoint = target_endpoints[target_index - 1]
+                                is_disabled = isinstance(endpoint, dict) and endpoint.get("disabled", False)
+                                if is_disabled:
+                                    continue
+
                             # 检查是否是早柚协议端点，如果是且消息类型需要跳过
                             is_sakoya = list_index < len(self.target_sakoya_flags) and self.target_sakoya_flags[list_index]
 
@@ -886,4 +953,64 @@ class ProxyConnection:
                 await ws.close()
         except Exception as e:
             self.logger.ws.error(f"[{self.connection_id}] 关闭WebSocket连接时出错: {e}")
+
+    async def reload_targets(self, new_config: dict):
+        """
+        重新加载目标端点配置
+
+        当配置更新时调用此方法，用于更新目标端点连接
+
+        Args:
+            new_config: 新的连接配置
+        """
+        try:
+            self.logger.ws.info(f"[{self.connection_id}] 正在重新加载目标端点配置...")
+
+            # 设置重载标志，防止旧的转发任务尝试重连
+            self.reloading = True
+
+            # 更新配置
+            self.config = new_config
+
+            # 关闭所有旧的目标连接
+            for target_ws in self.target_connections:
+                if target_ws:
+                    try:
+                        await target_ws.close()
+                    except Exception as e:
+                        self.logger.ws.debug(f"[{self.connection_id}] 关闭旧目标连接时出错: {e}")
+
+            # 清空目标连接列表
+            self.target_connections.clear()
+            self.target_sakoya_flags.clear()
+
+            # 重建重连锁
+            self.reconnect_locks = []
+            for endpoint in self.config.get("target_endpoints", []):
+                is_disabled = isinstance(endpoint, dict) and endpoint.get("disabled", False)
+                if not is_disabled:
+                    self.reconnect_locks.append(asyncio.Lock())
+                else:
+                    self.reconnect_locks.append(None)
+
+            # 重新连接到目标端点
+            await self._connect_to_targets()
+
+            # 启动新的转发任务来接收目标消息
+            for idx, target_ws in enumerate(self.target_connections):
+                if target_ws:
+                    target_index = self.list_index2target_index(idx)
+                    self.logger.ws.info(f"[{self.connection_id}] 启动目标 {target_index} 的转发任务")
+                    asyncio.create_task(self._forward_target_to_client(target_ws, target_index))
+
+            # 清除重载标志
+            self.reloading = False
+
+            self.logger.ws.info(f"[{self.connection_id}] 目标端点配置已重新加载")
+
+        except Exception as e:
+            self.reloading = False
+            self.logger.ws.error(f"[{self.connection_id}] 重新加载目标端点失败: {e}")
+            import traceback
+            self.logger.ws.error(f"[{self.connection_id}] 错误堆栈: {traceback.format_exc()}")
             

@@ -413,8 +413,21 @@ class UnifiedProxyServer:
                 f"端口 {port} 路由已更新，当前路由: {new_paths}"
             )
 
+        # 更新现有活动连接的配置
+        for connection_id, proxy_connection in list(self.active_connections.items()):
+            # 从最新配置中获取该连接的配置
+            if connection_id in connections_config:
+                new_config = connections_config[connection_id]
+                try:
+                    # 调用连接的 reload_targets 方法更新目标端点
+                    await proxy_connection.reload_targets(new_config)
+                    self.logger.ws.info(f"[{connection_id}] 活动连接配置已更新")
+                except Exception as e:
+                    self.logger.ws.error(f"[{connection_id}] 更新活动连接配置失败: {e}")
+
         self.logger.ws.info(
             f"路由重载完成: 端口 {ports_to_start} 新增, "
-            f"端口 {ports_to_stop} 移除, 共 {len(self.route_map)} 个端口"
+            f"端口 {ports_to_stop} 移除, 共 {len(self.route_map)} 个端口, "
+            f"已更新 {len(self.active_connections)} 个活动连接"
         )
 

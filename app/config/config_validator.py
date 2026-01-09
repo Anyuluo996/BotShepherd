@@ -211,7 +211,7 @@ class ConfigValidator:
                         if isinstance(endpoint, str):
                             if not ConfigValidator._validate_websocket_url(endpoint):
                                 errors.append(f"target_endpoints[{i}] 格式无效: {endpoint}")
-                        # 对象格式 {url: "...", sakoya_protocol: bool, headers: {}}
+                        # 对象格式 {url: "...", sakoya_protocol: bool, headers: {}, disabled: bool}
                         elif isinstance(endpoint, dict):
                             if "url" not in endpoint:
                                 errors.append(f"target_endpoints[{i}] 缺少 url 字段")
@@ -219,6 +219,8 @@ class ConfigValidator:
                                 errors.append(f"target_endpoints[{i}] url 格式无效: {endpoint['url']}")
                             if "sakoya_protocol" in endpoint and not isinstance(endpoint["sakoya_protocol"], bool):
                                 errors.append(f"target_endpoints[{i}] sakoya_protocol 必须是布尔值")
+                            if "disabled" in endpoint and not isinstance(endpoint["disabled"], bool):
+                                errors.append(f"target_endpoints[{i}] disabled 必须是布尔值")
                             # 验证自定义请求头
                             if "headers" in endpoint:
                                 headers = endpoint["headers"]
@@ -447,6 +449,7 @@ class ConfigTemplate:
                 {
                     "url": "ws://localhost:2536/OneBotv11",
                     "sakoya_protocol": False,
+                    "disabled": False,
                     "headers": {}  # 可选：自定义请求头，如 {"Authorization": "Basic token"}
                 }
             ],

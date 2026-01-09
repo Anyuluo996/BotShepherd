@@ -499,15 +499,14 @@ class WebServer:
                     self.config_manager.save_connection_config(connection_id, config)
                 )
 
-                # 如果enabled状态发生变化，热重载路由配置
-                if old_enabled != new_enabled:
-                    self.logger.web.info(f"连接 {connection_id} 启用状态已变更，正在重载路由...")
-                    if self.loop:
-                        self.loop.call_soon_threadsafe(
-                            lambda: asyncio.create_task(self.proxy_server.reload_routes())
-                        )
-                    else:
-                        asyncio.run(self.proxy_server.reload_routes())
+                # 热重载路由配置（任何配置变化都重载）
+                self.logger.web.info(f"连接 {connection_id} 配置已更新，正在重载路由...")
+                if self.loop:
+                    self.loop.call_soon_threadsafe(
+                        lambda: asyncio.create_task(self.proxy_server.reload_routes())
+                    )
+                else:
+                    asyncio.run(self.proxy_server.reload_routes())
 
                 return jsonify({'success': True})
             except ValueError as e:

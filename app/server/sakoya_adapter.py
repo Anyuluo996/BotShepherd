@@ -60,8 +60,8 @@ class GscoreWebSocketAdapter:
                 self._logger.ws.debug(f"[gscore] 发送数据: {data.decode('utf-8', errors='replace')}")
             await self._ws.send(data)
         except websockets.exceptions.ConnectionClosed as e:
-            # 连接已关闭，记录日志并重新抛出异常
-            self._logger.ws.warning(f"[gscore] 发送字节时连接已关闭: code={e.code}, reason={e.reason}")
+            # 连接已关闭，这是预期情况，记录 debug 级别日志
+            self._logger.ws.debug(f"[gscore] 发送字节时连接已关闭: code={e.code}, reason={e.reason}")
             raise
         except Exception as e:
             self._logger.ws.error(f"[gscore] 发送字节失败: {e}")
@@ -69,8 +69,8 @@ class GscoreWebSocketAdapter:
             try:
                 await self._ws.send(data.decode('utf-8'))
             except websockets.exceptions.ConnectionClosed as e2:
-                # 连接已关闭，记录日志并重新抛出异常
-                self._logger.ws.warning(f"[gscore] 回退到字符串时连接已关闭: code={e2.code}, reason={e2.reason}")
+                # 连接已关闭，这是预期情况，记录 debug 级别日志
+                self._logger.ws.debug(f"[gscore] 回退到字符串时连接已关闭: code={e2.code}, reason={e2.reason}")
                 raise
             except Exception as e2:
                 self._logger.ws.error(f"[gscore] 回退到字符串也失败: {e2}")
@@ -255,9 +255,9 @@ class GscoreWebSocketAdapter:
                 await self._send_bytes(json_str.encode('utf-8'))
 
         except Exception as e:
-            self._logger.ws.error(f"[gscore] 发送消息转换失败: {e}")
+            self._logger.ws.debug(f"[gscore] 发送消息转换失败: {e}")
             import traceback
-            self._logger.ws.error(f"[gscore] 错误堆栈: {traceback.format_exc()}")
+            self._logger.ws.debug(f"[gscore] 错误堆栈: {traceback.format_exc()}")
             # 失败时尝试直接发送
             try:
                 if isinstance(message, str):
@@ -265,9 +265,10 @@ class GscoreWebSocketAdapter:
                 else:
                     json_str = json.dumps(message, ensure_ascii=False)
                     await self._send_bytes(json_str.encode('utf-8'))
-                self._logger.ws.error(f"[gscore] <<< send() 异常恢复 - 已尝试直接发送")
+                self._logger.ws.debug(f"[gscore] <<< send() 异常恢复 - 已尝试直接发送")
             except Exception as e2:
-                self._logger.ws.error(f"[gscore] 直接发送也失败: {e2}")
+                # 连接关闭是预期情况，使用 debug 级别
+                self._logger.ws.debug(f"[gscore] 直接发送也失败: {e2}")
 
     async def recv(self):
         """

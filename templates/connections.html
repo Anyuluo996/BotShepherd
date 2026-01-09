@@ -251,8 +251,10 @@ function updateConnectionTable() {
         const targetEndpoints = connection.target_endpoints.map(ep => {
             const url = typeof ep === 'string' ? ep : ep.url;
             const isgscore = typeof ep === 'object' && ep.sakoya_protocol;
+            const isDisabled = typeof ep === 'object' && ep.disabled;
             const badge = isgscore ? ' <span class="badge bg-info">gscore</span>' : '';
-            return `<code>${url}</code>${badge}`;
+            const disabledBadge = isDisabled ? ' <span class="badge bg-secondary">已禁用</span>' : '';
+            return `<code>${url}</code>${badge}${disabledBadge}`;
         }).join('<br>');
 
         row.innerHTML = `
@@ -337,6 +339,7 @@ function editConnection(connectionId) {
         let url = '';
         let sakoyaProtocol = false;
         let headers = {};
+        let disabled = false;
 
         if (typeof endpoint === 'string') {
             url = endpoint;
@@ -346,16 +349,17 @@ function editConnection(connectionId) {
             url = endpoint.url || '';
             sakoyaProtocol = endpoint.sakoya_protocol || false;
             headers = endpoint.headers || {};
+            disabled = endpoint.disabled || false;
         }
 
-        addTargetEndpoint(url, sakoyaProtocol, headers);
+        addTargetEndpoint(url, sakoyaProtocol, headers, disabled);
     });
 
     new bootstrap.Modal(document.getElementById('connectionModal')).show();
 }
 
 // 添加目标端点
-function addTargetEndpoint(url = '', sakoyaProtocol = false, headers = {}) {
+function addTargetEndpoint(url = '', sakoyaProtocol = false, headers = {}, disabled = false) {
     const targetList = document.getElementById('targetEndpointsList');
     const div = document.createElement('div');
     div.className = 'mb-2 p-3 border rounded position-relative';
@@ -381,6 +385,13 @@ function addTargetEndpoint(url = '', sakoyaProtocol = false, headers = {}) {
                 连接到目标服务器时携带的请求头。参考格式：<br>
                 <code>Authorization: Bearer token</code> 或 <code>X-Api-Key: your_key</code>
             </div>
+        </div>
+        <div class="form-check">
+            <input class="form-check-input target-endpoint-disabled" type="checkbox" ${disabled ? 'checked' : ''}>
+            <label class="form-check-label">
+                禁用此端点
+            </label>
+            <div class="form-text">勾选后将不会连接到此目标端点，也不会转发消息</div>
         </div>
         <div class="form-check">
             <input class="form-check-input target-endpoint-sakoya" type="checkbox" ${sakoyaProtocol ? 'checked' : ''}>
@@ -443,8 +454,10 @@ async function saveConnection() {
             if (urlInput) {
                 const url = urlInput.value.trim();
                 if (url) {
+                    const disabledCheckbox = div.querySelector('.target-endpoint-disabled');
                     const endpointData = {
                         url: url,
+                        disabled: disabledCheckbox ? disabledCheckbox.checked : false,
                         sakoya_protocol: sakoyaCheckbox ? sakoyaCheckbox.checked : false
                     };
 
@@ -596,8 +609,10 @@ function showConnectionDetail(connectionId) {
                         ${connection.target_endpoints.map(ep => {
                             const url = typeof ep === 'string' ? ep : ep.url;
                             const isgscore = typeof ep === 'object' && ep.sakoya_protocol;
+                            const isDisabled = typeof ep === 'object' && ep.disabled;
                             const badge = isgscore ? ' <span class="badge bg-info">gscore</span>' : '';
-                            return `<code>${url}</code>${badge}`;
+                            const disabledBadge = isDisabled ? ' <span class="badge bg-secondary">已禁用</span>' : '';
+                            return `<code>${url}</code>${badge}${disabledBadge}`;
                         }).join('<br>')}
                     </td></tr>
                 </table>
