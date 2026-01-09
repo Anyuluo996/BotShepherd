@@ -27,7 +27,7 @@ RUN mkdir -p /app/data /app/config /app/logs
 
 # 健康检测
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import requests; requests.get('http://localhost:5111/health', timeout=5)" || exit 1
+    CMD uv run python -c "import requests; requests.get('http://localhost:5111/health', timeout=5)" || exit 1
 
 # 运行应用
 CMD ["uv", "run", "bs"]
