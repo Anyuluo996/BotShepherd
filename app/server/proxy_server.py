@@ -572,8 +572,7 @@ class ProxyConnection:
                 # 更新目标连接列表
                 self.target_connections[list_index] = target_ws
 
-                await self._process_client_message(self.first_message) # 比如yunzai需要使用first Message重新注册
-
+                # 重连成功后立即开始转发（不需要重新发送 first_message，因为客户端连接还在）
                 # 早柚协议连接立即开始转发，不等待5秒
                 if is_sakoya:
                     self.logger.ws.info(f"[{self.connection_id}] 目标连接 {target_index} 恢复成功，立即开始转发。")
@@ -632,8 +631,7 @@ class ProxyConnection:
                     # 更新目标连接列表
                     self.target_connections[list_index] = target_ws
 
-                    await self._process_client_message(self.first_message)
-
+                    # 重连成功后立即开始转发（不需要重新发送 first_message）
                     # 早柚协议连接立即开始转发，不等待5秒
                     if is_sakoya:
                         self.logger.ws.info(f"[{self.connection_id}] 目标连接 {target_index} 恢复成功，立即开始转发。")
@@ -769,6 +767,11 @@ class ProxyConnection:
             else:
                 message_data = message
 
+            # 检查是否是 log_only 消息（仅日志，不需要处理）
+            if message_data.get("action") == "log_only" or message_data.get("__log_only__"):
+                self.logger.ws.debug(f"[{self.connection_id}] 跳过 log_only 消息")
+                return
+
             self.logger.ws.debug(f"[{self.connection_id}] 来自连接 {target_index} 的API响应: {str(message_data)[:1000]}")
 
             if not self._construct_echo_info(message_data, target_index):
@@ -874,11 +877,55 @@ class ProxyConnection:
                         break
 
                 if echo_info:
-                    # 截断过长的数据（如base64）避免日志爆炸
-                    data_str = str(echo_info['data'])
-                    if len(data_str) > 200:
-                        data_str = data_str[:200] + f"...[total length: {len(data_str)}]"
-                    self.logger.ws.warning("[{}] API调用失败: {} -> {}".format(self.connection_id, data_str, event))
+                    # 提取详细信息
+                    data = echo_info['data']
+                    action = data.get('action', 'unknown')
+                    params = data.get('params', {})
+
+                    # 格式化消息内容
+                    message_content = ""
+                    if 'message' in params:
+                        msg = params['message']
+                        if isinstance(msg, list):
+                            # 消息段数组
+                            msg_parts = []
+                            for seg in msg:
+                                if isinstance(seg, dict):
+                                    seg_type = seg.get('type', 'unknown')
+                                    seg_data = seg.get('data', {})
+                                    if seg_type == 'text':
+                                        text = seg_data.get('text', '')
+                                        msg_parts.append(f"text:{text[:50]}")
+                                    elif seg_type == 'image':
+                                        msg_parts.append("image")
+                                    elif seg_type == 'at':
+                                        msg_parts.append(f"@{seg_data.get('qq', '?')}")
+                                    else:
+                                        msg_parts.append(seg_type)
+                            message_content = ", ".join(msg_parts)
+                        elif isinstance(msg, str):
+                            message_content = msg[:100]
+
+                    # 构建详细日志
+                    log_parts = [
+                        f"[{self.connection_id}] API调用失败",
+                        f"action={action}",
+                    ]
+
+                    # 添加关键参数
+                    if 'user_id' in params:
+                        log_parts.append(f"user_id={params['user_id']}")
+                    if 'group_id' in params:
+                        log_parts.append(f"group_id={params['group_id']}")
+                    if 'message' in params and message_content:
+                        log_parts.append(f"message=[{message_content}]")
+
+                    # 添加响应信息
+                    log_parts.append(f"-> status={event.status} retcode={event.retcode}")
+                    if event.message:
+                        log_parts.append(f"message='{event.message}'")
+
+                    self.logger.ws.warning(" ".join(log_parts))
                     
     async def _construct_msg_from_echo(self, echo, **kwargs):
         """从api结果中构造模拟收到消息"""

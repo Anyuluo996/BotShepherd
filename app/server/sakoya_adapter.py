@@ -55,9 +55,35 @@ class GscoreWebSocketAdapter:
         import websockets.exceptions
         try:
             # websockets 库的 send 方法支持 bytes
-            if len(data) < 1000:
-                # 仅调试时打印详细日志，避免日志爆炸
-                self._logger.ws.debug(f"[gscore] 发送数据: {data.decode('utf-8', errors='replace')}")
+            # 解码并记录发送的数据（使用 debug 级别）
+            try:
+                decoded = data.decode('utf-8', errors='replace')
+                # 尝试解析为JSON以获取简要信息
+                try:
+                    json_data = json.loads(decoded)
+                    # 根据消息类型记录简要信息
+                    if "status" in json_data:
+                        # API 响应消息
+                        status = json_data.get("status", "")
+                        echo = json_data.get("echo", "")[:8]
+                        self._logger.ws.debug(f"[gscore] SEND_TO_SAKOYA response status={status} echo={echo}")
+                    elif "content" in json_data:
+                        # 消息事件
+                        bot_id = json_data.get("bot_id", "")
+                        user_type = json_data.get("user_type", "")
+                        user_id = json_data.get("user_id", "")
+                        content = json_data.get("content", [])
+                        msg_type = content[0].get("type", "unknown") if content else "empty"
+                        self._logger.ws.debug(f"[gscore] SEND_TO_SAKOYA bot={bot_id} type={user_type} user={user_id} msg_type={msg_type}")
+                    else:
+                        self._logger.ws.debug(f"[gscore] SEND_TO_SAKOYA {decoded[:100]}")
+                except json.JSONDecodeError:
+                    # 不是JSON，直接显示
+                    if len(decoded) > 100:
+                        decoded = decoded[:100] + "..."
+                    self._logger.ws.debug(f"[gscore] SEND_TO_SAKOYA (raw): {decoded}")
+            except Exception as decode_err:
+                self._logger.ws.debug(f"[gscore] 发送数据 (无法解码): {len(data)} bytes")
             await self._ws.send(data)
         except websockets.exceptions.ConnectionClosed as e:
             # 连接已关闭，这是预期情况，记录 debug 级别日志
@@ -190,7 +216,11 @@ class GscoreWebSocketAdapter:
 
             # 检查是否是 API 响应（直接透传）
             if "echo" in message_data or "retcode" in message_data or "status" in message_data:
-                self._logger.ws.debug(f"[gscore] 检测到 API 响应，直接透传")
+                # 记录API响应（简化格式）
+                retcode = message_data.get("retcode", "")
+                status = message_data.get("status", "")
+                echo = str(message_data.get("echo", ""))[:8]
+                self._logger.ws.debug(f"[gscore] RECV_FROM_CLIENT API response status={status} retcode={retcode} echo={echo}")
                 json_str = json.dumps(message_data, ensure_ascii=False)
                 await self._send_bytes(json_str.encode('utf-8'))
                 return
@@ -210,6 +240,14 @@ class GscoreWebSocketAdapter:
                 # 然后将被引用消息中的图片追加到当前消息中
                 await self._process_reply_message(message_data)
 
+                # 记录原始OneBot消息（简化格式）
+                post_type = message_data.get("post_type", "")
+                message_type = message_data.get("message_type", "")
+                user_id = message_data.get("user_id", "")
+                group_id = message_data.get("group_id", "")
+                raw_msg = message_data.get("raw_message", "")[:50]
+                self._logger.ws.info(f"[gscore] RECV_FROM_CLIENT post_type={post_type} msg_type={message_type} user={user_id} group={group_id} msg={raw_msg}")
+
                 # onebot_event_to_sakoya 现在返回 msgspec.json.encode 的 bytes
                 sakoya_bytes = SakowaConverter.onebot_event_to_sakoya(message_data, self._bot_id)
                 if sakoya_bytes:
@@ -227,7 +265,8 @@ class GscoreWebSocketAdapter:
 
             # 检查是否是需要透传的 API 类型（不转换）
             if action in self.PASSTHROUGH_ACTIONS:
-                self._logger.ws.debug(f"[gscore] 检测到透传 API 类型: {action}，直接发送 OneBot 格式")
+                # 记录透传的API调用（简化格式）
+                self._logger.ws.info(f"[gscore] RECV_FROM_CLIENT passthrough action={action}")
                 json_str = json.dumps(message_data, ensure_ascii=False)
                 await self._send_bytes(json_str.encode('utf-8'))
                 return
@@ -237,13 +276,21 @@ class GscoreWebSocketAdapter:
 
             if not is_send_message:
                 # 非发送消息的 API，直接透传
-                self._logger.ws.debug(f"[gscore] 非发送消息 API ({action})，直接透传")
+                # 记录透传的API调用（简化格式）
+                self._logger.ws.info(f"[gscore] RECV_FROM_CLIENT passthrough action={action}")
                 json_str = json.dumps(message_data, ensure_ascii=False)
                 await self._send_bytes(json_str.encode('utf-8'))
                 return
 
             # 处理发送消息 API（send_private_msg、send_group_msg 等）
             # 将 OneBot v11 发送消息 API 转换为早柚协议
+
+            # 记录原始OneBot API调用（简化格式）
+            params = message_data.get("params", {})
+            target = params.get("user_id") or params.get("group_id", "")
+            msg_content = str(params.get("message", ""))[:50]
+            self._logger.ws.info(f"[gscore] RECV_FROM_CLIENT send_msg action={action} target={target} msg={msg_content}")
+
             sakoya_bytes = SakowaConverter.onebot_to_sakoya(message_data)
 
             if sakoya_bytes:
@@ -282,6 +329,42 @@ class GscoreWebSocketAdapter:
             # 接收原始消息
             raw_message = await self._ws.recv()
 
+            # 记录从早柚后端接收的原始消息（简化格式）
+            try:
+                decoded = raw_message.decode('utf-8', errors='replace')
+                # 尝试解析为JSON以获取简要信息
+                try:
+                    json_data = json.loads(decoded)
+                    # 检查是否是 log 类型消息
+                    if isinstance(json_data, dict) and "content" in json_data:
+                        content = json_data.get("content", [])
+                        if len(content) == 1 and isinstance(content[0], dict):
+                            first_msg = content[0]
+                            if first_msg.get("type", "").startswith("log_"):
+                                # log 类型消息，跳过，继续接收下一条
+                                self._logger.ws.debug(f"[gscore] 跳过 log 消息，继续接收")
+                                return await self.recv()  # 递归调用
+
+                        # 记录简要信息
+                        msg_type = content[0].get("type", "unknown") if content else "empty"
+                        bot_id = json_data.get("bot_id", "")
+                        target_id = json_data.get("target_id", "")
+                        self._logger.ws.info(f"[gscore] RECV_FROM_SAKOYA bot={bot_id} target={target_id} type={msg_type}")
+                    elif "status" in json_data:
+                        # API 响应消息
+                        status = json_data.get("status", "")
+                        retcode = json_data.get("retcode", "")
+                        self._logger.ws.debug(f"[gscore] RECV_FROM_SAKOYA response status={status} retcode={retcode}")
+                    else:
+                        self._logger.ws.debug(f"[gscore] RECV_FROM_SAKOYA {decoded[:100]}")
+                except json.JSONDecodeError:
+                    # 不是 JSON，直接显示
+                    if len(decoded) > 100:
+                        decoded = decoded[:100] + "..."
+                    self._logger.ws.debug(f"[gscore] RECV_FROM_SAKOYA (raw): {decoded}")
+            except Exception as decode_err:
+                self._logger.ws.debug(f"[gscore] 接收数据 (无法解码): {len(raw_message)} bytes")
+
             # 尝试使用 msgspec 解析为 JSON
             try:
                 # 使用 msgspec.json.decode 解析，指定类型为 MessageSend
@@ -295,6 +378,20 @@ class GscoreWebSocketAdapter:
                     import traceback
                     self._logger.ws.error(f"[gscore] 转换错误堆栈: {traceback.format_exc()}")
                     raise
+
+                # 检查是否是 log_only 消息（仅日志，不需要发送到 OneBot）
+                if onebot_api.get("__log_only__"):
+                    # log 类型消息，跳过，继续接收下一条
+                    self._logger.ws.debug(f"[gscore] log消息，跳过发送")
+                    return await self.recv()
+
+                # 清理消息中的群号（从 message 字段中移除群号）
+                if "params" in onebot_api and "message" in onebot_api["params"]:
+                    onebot_api["params"]["message"] = self._clean_group_numbers(onebot_api["params"]["message"])
+
+                # 记录转换后的 API 调用（仅基本信息）
+                action = onebot_api.get("action", "unknown")
+                self._logger.ws.info(f"[gscore] SEND_TO_CLIENT action={action}")
 
                 # 返回 OneBot v11 API 调用的 JSON 字符串
                 result = json.dumps(onebot_api, ensure_ascii=False)
@@ -334,6 +431,31 @@ class GscoreWebSocketAdapter:
             import traceback
             self._logger.ws.error(f"[gscore] 错误堆栈: {traceback.format_exc()}")
             raise
+
+    def _clean_group_numbers(self, message_segments):
+        """
+        清理消息中的群号
+        移除纯数字的文本消息段（可能是群号）
+        """
+        import re
+        cleaned = []
+        for segment in message_segments:
+            if isinstance(segment, dict):
+                seg_type = segment.get("type", "")
+                seg_data = segment.get("data", {})
+
+                if seg_type == "text":
+                    text = seg_data.get("text", "")
+                    # 移除纯数字或数字+空格的消息段（可能是群号）
+                    if text and text.strip() and not text.strip().isdigit():
+                        # 保留非纯数字的文本
+                        cleaned.append(segment)
+                    # 移除纯数字的文本（可能是群号）
+                else:
+                    # 保留非文本消息段
+                    cleaned.append(segment)
+
+        return cleaned
 
     async def close(self, *args, **kwargs):
         """关闭连接"""

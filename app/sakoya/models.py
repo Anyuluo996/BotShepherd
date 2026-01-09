@@ -60,14 +60,13 @@ class SakowaConverter:
     def onebot_event_to_sakoya(event: dict, bot_id: str = "Bot") -> Optional[bytes]:
         """
         将 OneBot v11 的消息事件转换为早柚协议的 MessageReceive 格式
-        使用 msgspec.json.encode 确保类型安全
 
         Args:
             event: OneBot v11 消息事件
             bot_id: 早柚协议的 bot_id
 
         Returns:
-            早柚协议 MessageReceive 的 msgspec 编码字节，如果不是消息事件则返回 None
+            早柚协议 MessageReceive 的 JSON 编码字节，如果不是消息事件则返回 None
         """
         post_type = event.get("post_type")
 
@@ -88,83 +87,81 @@ class SakowaConverter:
                 if seg_type == "text":
                     content.append(Message(type="text", data=str(seg_data.get("text", ""))))
                 elif seg_type == "at":
-                    # 确保qq号转换为字符串
                     content.append(Message(type="at", data=str(seg_data.get("qq", ""))))
                 elif seg_type == "image":
-                    # OneBot image 格式: {file: "url" or "base64://...", url: "...", ...}
-                    # 早柚协议图片格式: data 直接是字符串 "base64://..." 或 URL
-                    # 优先使用 url 字段（如果存在）
                     img_url = seg_data.get("url", "")
                     img_file = seg_data.get("file", "")
 
-                    # 选择最合适的图片源
-                    img_source = img_url if img_url else img_file
-
-                    # 早柚协议：data 直接是字符串（base64:// 或 http:// 或文件名）
-                    if img_source.startswith("base64://"):
-                        # base64 图片：直接传递 base64:// 字符串
-                        content.append(Message(type="image", data=img_source))
-                    elif img_source.startswith("http"):
-                        # URL 图片：直接传递 URL
-                        content.append(Message(type="image", data=img_source))
+                    # 早柚协议规范：image 的 data 必须是 {type: url|file|b64, content: string}
+                    if img_file.startswith("base64://"):
+                        # base64 格式
+                        content.append(Message(type="image", data={
+                            "type": "b64",
+                            "content": img_file[9:]  # 移除 base64:// 前缀
+                        }))
+                    elif img_file.startswith("http") or img_url.startswith("http"):
+                        # URL 格式（优先使用 url 字段）
+                        img_source = img_url if img_url else img_file
+                        content.append(Message(type="image", data={
+                            "type": "url",
+                            "content": img_source
+                        }))
                     else:
-                        # 文件名：优先使用 url 字段
-                        if img_url:
-                            content.append(Message(type="image", data=img_url))
-                        else:
-                            content.append(Message(type="image", data=img_source))
+                        # 文件格式
+                        img_source = img_url if img_url else img_file
+                        content.append(Message(type="image", data={
+                            "type": "file",
+                            "content": img_source
+                        }))
                 elif seg_type == "record":
-                    content.append(Message(type="record", data=str(seg_data.get("file", ""))))
+                    # record: 音频文件，data 为字符串 {文件名}|{文件base64}
+                    record_file = str(seg_data.get("file", ""))
+                    content.append(Message(type="record", data=record_file))
                 elif seg_type == "reply":
                     content.append(Message(type="reply", data=str(seg_data.get("id", ""))))
                 else:
                     # 其他类型转为文本
                     content.append(Message(type="text", data=str(seg_data)))
 
-        # 引用消息补全逻辑（参考 Koishi 早柚适配器）
-        # 如果消息中包含引用（reply），尝试从被引用消息中提取图片等元素
-        # 这是为了支持评分等功能需要图片上下文的场景
-        # 参考：https://github.com/koishijs/koishi-plugin-adapter-satori/blob/master/src/message.ts#L135-152
-        reply_data = event.get("reply")
-        if reply_data and isinstance(reply_data, dict):
-            # OneBot v11 扩展：某些实现（如 NapCat）可能在事件中提供 reply 字段
-            # reply 字段包含被引用消息的完整内容
-            reply_message = reply_data.get("message", [])
-            if reply_message:
-                # 遍历被引用消息的消息段，提取图片
-                for seg in reply_message:
-                    if isinstance(seg, dict):
-                        seg_type = seg.get("type")
-                        seg_data = seg.get("data", {})
-                        if seg_type == "image" and seg_data:
-                            img_file = seg_data.get("file", "")
-                            # 将引用消息中的图片追加到消息内容中
-                            # 这样早柚后端就能获取到完整的上下文
-                            if img_file.startswith("base64://"):
-                                content.append(Message(type="image", data={
-                                    "type": "b64",
-                                    "content": img_file[9:]
-                                }))
-                            elif img_file.startswith("http"):
-                                content.append(Message(type="image", data={
-                                    "type": "url",
-                                    "content": img_file
-                                }))
-                            else:
-                                content.append(Message(type="image", data={
-                                    "type": "file",
-                                    "content": img_file
-                                }))
-
         # 转换发送者信息
         sender = event.get("sender", {})
+
+        # 根据角色计算 user_pm（越小权限越高）
+        role = sender.get("role", "member")
+        if is_group:
+            if role == "owner":
+                user_pm = 2  # 群主
+            elif role == "admin":
+                user_pm = 3  # 群管理员
+            else:
+                user_pm = 6  # 普通群员
+        else:
+            user_pm = 6  # 私聊，非超级用户
+
         sakoya_sender = {
             "nickname": str(sender.get("nickname", "")),
             "card": str(sender.get("card", "")),
+            "role": role,
+            "user_id": sender.get("user_id", ""),
+            "sex": sender.get("sex", "unknown"),
+            "age": sender.get("age", 0),
+            "area": sender.get("area", ""),
+            "level": sender.get("level", ""),
+            "title": sender.get("title", ""),
         }
 
+        # 添加头像字段
+        if "avatar" in sender:
+            sakoya_sender["avatar"] = sender["avatar"]
+        elif "avater" in sender:  # 注意：某些实现可能是 avater（拼写错误）
+            sakoya_sender["avatar"] = sender["avater"]
+        else:
+            # 如果没有头像，根据 user_id 构造 QQ 头像 URL
+            user_id = sender.get("user_id", event.get("user_id", ""))
+            if user_id:
+                sakoya_sender["avatar"] = f"http://q.qlogo.cn/headimg_dl?dst_uin={user_id}&spec=640"
+
         # 手动构造字典，确保所有 ID 字段都是字符串
-        # 不使用 msgspec.Struct，直接用 dict 确保类型
         result = {
             "bot_id": str(bot_id),
             "bot_self_id": str(event.get("self_id", "")),
@@ -172,7 +169,7 @@ class SakowaConverter:
             "user_type": "group" if is_group else "direct",
             "user_id": str(event.get("user_id", "")),
             "sender": sakoya_sender,
-            "user_pm": 3,
+            "user_pm": user_pm,
             "content": [msg if isinstance(msg, dict) else {"type": msg.type, "data": msg.data} for msg in content]
         }
 
@@ -180,7 +177,7 @@ class SakowaConverter:
         if is_group:
             result["group_id"] = str(event.get("group_id", ""))
 
-        # 使用标准 json.dumps 编码（与官方适配器一致）
+        # 使用标准 json.dumps 编码
         json_str = json.dumps(result, ensure_ascii=False)
         encoded = json_str.encode('utf-8')
         return encoded
@@ -373,6 +370,19 @@ class SakowaConverter:
         # 确定消息类型和目标
         is_group = message.target_type == 'group'
 
+        # 检查是否是纯 log 消息（仅用于日志输出，不转换为 API 调用）
+        if message.content and len(message.content) == 1:
+            first_msg = message.content[0]
+            if first_msg.type and first_msg.type.startswith("log_"):
+                # log 类型消息，仅用于日志输出，不转换为 API 调用
+                # 返回一个空响应（表示不需要发送）
+                return {
+                    "action": "log_only",
+                    "params": {},
+                    "echo": uuid.uuid4().hex,
+                    "__log_only__": True  # 标记为仅日志消息
+                }
+
         # 转换消息段
         message_segments = []
         for msg in message.content or []:
@@ -474,23 +484,41 @@ class SakowaConverter:
 
         # 构造 OneBot v11 API 调用
         if is_group:
+            group_id = int(message.target_id) if message.target_id and str(message.target_id).isdigit() else 0
             api_call = {
                 "action": "send_group_msg",
                 "params": {
-                    "group_id": int(message.target_id) if message.target_id and str(message.target_id).isdigit() else 0,
+                    "group_id": group_id,
                     "message": message_segments
                 },
                 "echo": uuid.uuid4().hex
             }
+
+            # 警告：如果 group_id 为 0
+            if group_id == 0:
+                import logging
+                logging.getLogger(__name__).warning(
+                    f"[sakoya] 目标群号无效！target_type={message.target_type}, "
+                    f"原始target_id={repr(message.target_id)}, 转换后group_id=0"
+                )
         else:
+            user_id = int(message.target_id) if message.target_id and str(message.target_id).isdigit() else 0
             api_call = {
                 "action": "send_private_msg",
                 "params": {
-                    "user_id": int(message.target_id) if message.target_id and str(message.target_id).isdigit() else 0,
+                    "user_id": user_id,
                     "message": message_segments
                 },
                 "echo": uuid.uuid4().hex
             }
+
+            # 警告：如果 user_id 为 0
+            if user_id == 0:
+                import logging
+                logging.getLogger(__name__).warning(
+                    f"[sakoya] 目标用户ID无效！target_type={message.target_type}, "
+                    f"原始target_id={repr(message.target_id)}, 转换后user_id=0"
+                )
 
         return api_call
 
