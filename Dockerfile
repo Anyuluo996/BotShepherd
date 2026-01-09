@@ -10,6 +10,12 @@ ENV PYTHONUNBUFFERED=1 \
     UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy
 
+# 安装系统依赖（包括 curl 用于健康检查）
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
 # 复制项目文件
 COPY pyproject.toml uv.lock ./
 COPY app ./app
@@ -27,7 +33,7 @@ RUN mkdir -p /app/data /app/config /app/logs
 
 # 健康检测
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD uv run python -c "import requests; requests.get('http://localhost:5111/health', timeout=5)" || exit 1
+    CMD curl -f http://localhost:5111/health || exit 1
 
 # 运行应用
 CMD ["uv", "run", "bs"]
