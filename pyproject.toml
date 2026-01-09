@@ -1,6 +1,6 @@
 [project]
 name = "botshepherd"
-version = "0.5.3"
+version = "0.5.4"
 description = "星星花与牧羊人 - 多框架统一管理平台"
 readme = "README.md"
 requires-python = ">=3.10"
